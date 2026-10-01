@@ -1,0 +1,96 @@
+Pod = VỎ BỌC, bao lấy container.
+Là đơn vị NHỎ NHẤT mà Kubernetes quản lý. K8s KHÔNG quản container trực tiếp - nó quản Pod.
+
+    Container  ->  Pod  ->  Deployment  ->  Service  ->  Ingress
+    (ứng dụng)    (vỏ)     (quản nhiều   (điều phối   (định tuyến
+                            pod)          traffic)     theo domain)
+
+
+1. TRONG 1 POD CÓ GÌ?
+--------------------------------------------------
+- Một (hoặc vài) container
+- Một địa chỉ IP DÙNG CHUNG cho cả Pod
+- Volume (ổ đĩa) dùng chung
+
+=> Các container trong CÙNG 1 Pod:
+   - Gọi nhau qua localhost (vì chung IP)
+   - KHÔNG được trùng port
+   - Sinh ra cùng lúc, chết cùng lúc, luôn nằm chung 1 Node
+
+
+2. NGUYÊN TẮC: 1 CONTAINER / 1 POD
+--------------------------------------------------
+Chỉ nên triển khai MỘT container trong một Pod để chúng không phụ thuộc vào nhau.
+
+Vì sao:
+- Scale độc lập: web cần 10 bản, database chỉ cần 1. Nhét chung -> buộc phải nhân bản cả hai.
+- Hỏng 1 container -> cả Pod restart theo -> kéo theo cái còn lại chết oan.
+- Update riêng lẻ được, không phải deploy lại toàn bộ.
+
+Ngoại lệ (sidecar) - đặt chung khi container phụ CHỈ phục vụ container chính:
+- Thu gom log
+- Proxy / service mesh
+- Container phụ trợ nạp dữ liệu trước khi app chạy (init container)
+
+
+3. POD LÀ THỨ "DÙNG MỘT LẦN" (ephemeral)
+--------------------------------------------------
+- Pod chết -> KHÔNG tự sống lại. K8s tạo Pod MỚI hoàn toàn, tên khác, IP khác.
+- Dữ liệu ghi trong Pod sẽ MẤT. Muốn giữ -> phải gắn Volume / PersistentVolume.
+- Vì IP đổi liên tục nên KHÔNG BAO GIỜ gọi Pod qua IP -> đó là lý do cần Service.
+
+=> Thực tế gần như không ai tạo Pod thủ công. Luôn tạo qua Deployment
+   để có tự động restart, scale và rolling update.
+   Tạo Pod tay chỉ dùng khi học hoặc debug nhanh.
+
+
+4. CÁC TRƯỜNG CHÍNH TRONG pod.yaml
+--------------------------------------------------
+    apiVersion: v1                  # Pod là object lõi -> luôn là v1
+    kind: Pod
+    metadata:
+      name: car-serv                # tên Pod, duy nhất trong namespace
+      namespace: car-serv           # "thư mục" logic, chia tách tài nguyên
+                                    #   -> phải tạo trước bằng ns.yaml
+    spec:
+      containers:
+      - name: car-serv              # tên container bên trong Pod
+        image: elroydevops/car-serv # image lấy từ Docker Hub / registry
+        ports:
+        - containerPort: 80         # cổng app lắng nghe bên trong container
+                                    #   -> Service sẽ lấy số này làm targetPort
+
+
+5. VÒNG ĐỜI POD (cột STATUS khi kubectl get pod)
+--------------------------------------------------
+    Pending             - đang chờ xếp Node hoặc đang tải image
+    Running             - đã chạy
+    Succeeded           - chạy xong và thoát bình thường (job)
+    Failed              - thoát do lỗi
+    CrashLoopBackOff    - khởi động lỗi liên tục -> xem logs ngay
+    ImagePullBackOff    - sai tên image hoặc không có quyền pull
+
+
+6. LỆNH HAY DÙNG
+--------------------------------------------------
+    kubectl apply -f ns.yaml                          # tạo namespace trước
+    kubectl apply -f pod.yaml                         # rồi tạo Pod
+
+    kubectl get pod -n car-serv                       # liệt kê
+    kubectl get pod -n car-serv -o wide               # xem thêm IP + Node
+    kubectl get pod --show-labels                     # xem nhãn (Service dựa vào đây)
+
+    kubectl describe pod car-serv -n car-serv         # chi tiết + sự kiện -> debug
+    kubectl logs car-serv -n car-serv                 # xem log ứng dụng
+    kubectl logs -f car-serv -n car-serv              # theo dõi log liên tục
+
+    kubectl exec -it car-serv -n car-serv -- /bin/bash  # chui vào trong container
+
+    kubectl delete -f pod.yaml                        # xóa
+
+
+7. GHI NHỚ NGẮN
+--------------------------------------------------
+    Pod là vỏ bọc container, có IP riêng, và LUÔN CÓ THỂ CHẾT BẤT CỨ LÚC NÀO.
+    Đừng bám vào một Pod cụ thể - hãy để Deployment lo việc giữ số lượng,
+    và để Service lo việc tìm đường tới chúng.

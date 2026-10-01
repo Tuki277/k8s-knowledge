@@ -1,0 +1,162 @@
+StatefulSet = DEPLOYMENT dành cho app CÓ TRẠNG THÁI (database, kafka, redis...).
+
+Deployment coi mọi Pod LÀ NHƯ NHAU - đàn cừu, con nào cũng vậy, chết thì thay con khác.
+StatefulSet coi mỗi Pod LÀ MỘT CÁ THỂ RIÊNG - có TÊN riêng, Ổ ĐĨA riêng, THỨ TỰ riêng.
+
+    Deployment  : "GIA SÚC"  - không tên, chết thì thay, ai cũng như ai
+    StatefulSet : "THÚ CƯNG" - có tên, chết thì hồi sinh ĐÚNG con đó, ĐÚNG ổ đĩa đó
+
+
+1. STATELESS vs STATEFUL - PHÂN BIỆT TRƯỚC
+--------------------------------------------------
+- STATELESS (không trạng thái): web, API, nginx
+  Pod nào xử lý request cũng cho kết quả giống nhau. Không nhớ gì cả.
+  -> Dùng DEPLOYMENT.
+
+- STATEFUL (có trạng thái): PostgreSQL, MySQL, MongoDB, Kafka, Redis, Elasticsearch
+  Mỗi Pod GIỮ DỮ LIỆU RIÊNG. Pod-0 và Pod-1 chứa dữ liệu KHÁC NHAU.
+  Pod-0 là master, Pod-1 là replica -> KHÔNG thể hoán đổi cho nhau.
+  -> Dùng STATEFULSET.
+
+
+2. STATEFULSET CHO 3 THỨ MÀ DEPLOYMENT KHÔNG CÓ
+--------------------------------------------------
+(a) TÊN CỐ ĐỊNH, CÓ SỐ THỨ TỰ
+    Deployment  -> nginx-7d9fb8c-x7k2p   (tên ngẫu nhiên, chết là đổi tên khác)
+    StatefulSet -> postgres-0, postgres-1, postgres-2
+                   Pod postgres-1 chết -> hồi sinh VẪN TÊN postgres-1.
+
+(b) Ổ ĐĨA RIÊNG CHO TỪNG POD (volumeClaimTemplates)
+    Deployment  -> mọi Pod DÙNG CHUNG 1 PVC -> tranh nhau ổ đĩa, hỏng dữ liệu.
+    StatefulSet -> k8s TỰ tạo PVC RIÊNG cho mỗi Pod:
+                       data-postgres-0, data-postgres-1, data-postgres-2
+                   Pod chết, sống lại -> gắn ĐÚNG ổ đĩa cũ -> dữ liệu còn nguyên.
+    ⭐ ĐÂY LÀ LÝ DO CHÍNH phải dùng StatefulSet cho database.
+
+(c) TẠO / XÓA THEO ĐÚNG THỨ TỰ
+    Tạo : 0 -> 1 -> 2   (Pod trước CHẠY XONG mới tạo Pod sau)
+    Xóa : 2 -> 1 -> 0   (ngược lại)
+    Vì sao cần: database phải có master (Pod-0) chạy trước, replica mới nối vào được.
+    ⚠️ Hệ quả: Pod-0 lỗi -> Pod-1, Pod-2 KHÔNG BAO GIỜ được tạo. Cả cụm đứng im.
+
+
+3. BẮT BUỘC CÓ HEADLESS SERVICE
+--------------------------------------------------
+StatefulSet PHẢI đi kèm 1 Service đặc biệt gọi là HEADLESS SERVICE:
+
+        clusterIP: None        <- chính dòng này làm nó thành "headless"
+
+- Service thường : có 1 IP ảo, CHIA ĐỀU traffic ngẫu nhiên cho các Pod
+                   -> không gọi được đúng Pod nào -> VÔ DỤNG với database.
+- Headless       : KHÔNG có IP ảo, trả về THẲNG IP của TỪNG Pod
+                   -> gọi được ĐÍCH DANH từng Pod qua DNS:
+
+        postgres-0.postgres-headless.default.svc.cluster.local
+        postgres-1.postgres-headless.default.svc.cluster.local
+        \______/   \_______________/  \_____/
+        tên Pod    tên headless svc   namespace
+
+Thực tế hay dùng 2 Service cùng lúc:
+    - Headless service     -> để các Pod TÌM NHAU (replica nối vào master)
+    - ClusterIP thường     -> để APP BÊN NGOÀI kết nối vào database
+
+
+4. FILE statefulset.yaml - KHÁC DEPLOYMENT Ở ĐÂU
+--------------------------------------------------
+    apiVersion: apps/v1                # giống Deployment
+    kind: StatefulSet                  # <- khác
+    metadata:
+      name: postgres                   # tên này thành TIỀN TỐ của Pod: postgres-0, postgres-1
+    spec:
+      serviceName: postgres-headless   # ⭐ BẮT BUỘC - tên Headless Service
+                                       #    Deployment KHÔNG có trường này
+      replicas: 3
+      selector:
+        matchLabels:
+          app: postgres
+      template:                        # giống hệt Deployment
+        ...
+      volumeClaimTemplates:            # ⭐ KHÁC BIỆT LỚN NHẤT
+      - metadata:
+          name: data                   # -> PVC sinh ra tên: data-postgres-0, data-postgres-1
+        spec:
+          accessModes: [ "ReadWriteOnce" ]
+          resources:
+            requests:
+              storage: 10Gi            # MỖI Pod được 10Gi RIÊNG (3 Pod = 30Gi)
+
+    => Deployment dùng volumes + PVC có sẵn (dùng chung).
+       StatefulSet dùng volumeClaimTemplates (k8s tự đẻ PVC cho từng Pod).
+
+
+5. ⚠️ XÓA STATEFULSET KHÔNG XÓA PVC
+--------------------------------------------------
+Đây là hành vi CỐ Ý của k8s để BẢO VỆ DỮ LIỆU:
+
+    kubectl delete statefulset postgres    -> Pod mất, PVC VẪN CÒN
+    kubectl apply -f statefulset.yaml      -> Pod sống lại, gắn ĐÚNG ổ cũ, dữ liệu nguyên vẹn
+
+Muốn xóa sạch phải xóa PVC bằng tay:
+    kubectl delete pvc data-postgres-0 data-postgres-1 data-postgres-2
+
+=> Cẩn thận: cứ apply đi apply lại khi học sẽ để lại một đống PVC (tốn dung lượng).
+   Kiểm tra bằng: kubectl get pvc
+
+
+6. SCALE - CẨN THẬN HƠN DEPLOYMENT NHIỀU
+--------------------------------------------------
+- Scale LÊN   : an toàn, Pod mới tạo lần lượt kèm ổ đĩa mới.
+- Scale XUỐNG : Pod bị xóa từ SỐ LỚN VỀ NHỎ (2 -> 1 -> 0),
+                nhưng PVC KHÔNG bị xóa -> scale lên lại là dữ liệu còn nguyên.
+- HPA gần như KHÔNG dùng cho StatefulSet. Database không scale theo CPU được -
+  thêm 1 replica database phải đồng bộ dữ liệu, không phải cứ đẻ Pod là xong.
+
+
+7. LƯU Ý QUAN TRỌNG
+--------------------------------------------------
+- StatefulSet CHỈ lo phần hạ tầng (tên, ổ đĩa, thứ tự).
+  Nó KHÔNG BIẾT cấu hình master-replica cho database.
+  Việc đó phải tự làm bằng script init, hoặc dùng OPERATOR
+  (CloudNativePG, Zalando Postgres Operator, Strimzi cho Kafka).
+  -> Thực tế production: người ta dùng OPERATOR, không viết StatefulSet tay.
+
+- Update chậm hơn Deployment: thay Pod LẦN LƯỢT từ số LỚN về NHỎ, từng cái một.
+- Pod-0 kẹt Pending -> cả cụm đứng. Luôn kiểm tra Pod-0 trước khi debug.
+- Vẫn dùng chung ConfigMap / Secret bình thường như Deployment.
+- Chỉ dùng StatefulSet KHI THẬT SỰ CẦN. App thường -> Deployment đơn giản hơn nhiều.
+
+
+8. LỆNH HAY DÙNG
+--------------------------------------------------
+    kubectl apply -f statefulset.yaml
+    kubectl get statefulset                    # viết tắt: kubectl get sts
+    kubectl get pods                           # thấy postgres-0, postgres-1, postgres-2
+    kubectl get pvc                            # thấy data-postgres-0, data-postgres-1...
+
+    kubectl describe sts postgres
+    kubectl logs postgres-0                    # gọi ĐÍCH DANH từng Pod được
+
+    # gọi thẳng 1 Pod qua DNS (chạy từ Pod khác)
+    kubectl run test --rm -it --image=busybox -- sh
+        nslookup postgres-0.postgres-headless
+
+    kubectl scale sts postgres --replicas=5
+
+    # xóa StatefulSet nhưng GIỮ Pod (hiếm dùng)
+    kubectl delete sts postgres --cascade=orphan
+
+    kubectl delete -f statefulset.yaml
+    kubectl get pvc                            # ⚠️ PVC VẪN CÒN - phải xóa tay
+
+
+9. GHI NHỚ NGẮN
+--------------------------------------------------
+    Deployment  : web, API        -> Pod vô danh, dùng chung mọi thứ
+    StatefulSet : database, kafka -> Pod CÓ TÊN + Ổ ĐĨA RIÊNG + THỨ TỰ
+
+    3 thứ luôn đi cùng nhau khi viết StatefulSet:
+        1. Headless Service (clusterIP: None)
+        2. serviceName trỏ đúng tên headless service đó
+        3. volumeClaimTemplates (ổ đĩa riêng mỗi Pod)
+
+    Và nhớ: XÓA StatefulSet KHÔNG xóa PVC.

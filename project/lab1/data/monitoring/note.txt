@@ -1,0 +1,8 @@
+Các use case grafana dashboard
+- use case hạ tầng
+    - Kubernetes / API Server
+
+- use case dự án
+    - Dự án có thực sự chậm không
+        - Resource
+        - Network

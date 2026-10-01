@@ -1,0 +1,3 @@
+bật This is project is parameterized
+
+cài đặt plugin Active Choices

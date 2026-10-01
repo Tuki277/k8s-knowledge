@@ -1,0 +1,153 @@
+ConfigMap = NƠI CẤT CẤU HÌNH, tách riêng khỏi image.
+
+Ý tưởng cốt lõi:
+    Code thì ĐÓNG GÓI 1 LẦN, còn cấu hình thì ĐỔI THEO MÔI TRƯỜNG.
+    -> Cùng 1 image nginx chạy được cho cả dev / staging / production,
+       chỉ khác nhau ở ConfigMap gắn vào.
+
+
+1. VÌ SAO CẦN CONFIGMAP?
+--------------------------------------------------
+Nếu ghi cứng cấu hình vào trong image (hardcode):
+    - Đổi 1 dòng URL database -> phải BUILD LẠI image, PUSH lại, DEPLOY lại
+    - Mỗi môi trường 1 image riêng -> 3 môi trường = 3 image khác nhau -> dễ lệch
+    - Không ai biết app đang chạy với cấu hình gì nếu không mở image ra xem
+
+Dùng ConfigMap:
+    - Sửa cấu hình -> chỉ cần apply lại ConfigMap, KHÔNG build lại image
+    - 1 image dùng chung cho mọi môi trường
+    - Cấu hình nằm trong file YAML -> đọc được, review được, đưa lên git được
+
+
+2. CẤT ĐƯỢC NHỮNG GÌ?
+--------------------------------------------------
+- Giá trị ngắn (key = value):
+        APP_ENV = production
+        LOG_LEVEL = debug
+        DB_HOST = mysql-service
+
+- Cả một FILE cấu hình:
+        nginx.conf, application.yml, config.json ...
+
+
+3. ⚠️ KHÔNG BAO GIỜ ĐỂ THÔNG TIN MẬT VÀO CONFIGMAP
+--------------------------------------------------
+ConfigMap lưu dạng CHỮ THƯỜNG, ai có quyền đọc cũng thấy hết:
+        kubectl get configmap <ten> -o yaml     -> lộ sạch
+
+    Password, API key, token, chứng chỉ  ->  dùng SECRET (kind: Secret)
+
+    ConfigMap : cấu hình công khai   (port, url, log level, feature flag)
+    Secret    : thông tin bí mật     (password, token, key)
+
+    (Secret cũng chỉ mã hóa base64 - che mắt thường thôi, không phải mã hóa thật.
+     Muốn an toàn thật phải bật encryption at rest hoặc dùng Vault.)
+
+
+4. FILE configmap.yaml CƠ BẢN
+--------------------------------------------------
+    apiVersion: v1               # ConfigMap là object lõi -> v1
+    kind: ConfigMap
+    metadata:
+      name: app-config           # TÊN NÀY sẽ được Deployment gọi lại
+      namespace: default         # PHẢI cùng namespace với Pod dùng nó
+    data:
+      # --- kiểu 1: từng cặp key = value ---
+      APP_ENV: "production"
+      LOG_LEVEL: "debug"
+      DB_HOST: "mysql-service"   # gọi Service bằng TÊN, không dùng IP
+
+      # --- kiểu 2: nhét nguyên 1 file (dấu | = giữ nguyên xuống dòng) ---
+      nginx.conf: |
+        server {
+          listen 80;
+          server_name localhost;
+        }
+
+    LƯU Ý: value nên để trong nháy kép "".
+           Không có nháy, YAML tự hiểu 8080 là số, true là boolean -> dễ lỗi.
+
+
+5. CÁCH GẮN VÀO POD - 3 KIỂU
+--------------------------------------------------
+KIỂU A - Lấy TỪNG biến (rõ ràng, dễ kiểm soát)
+    Trong deployment.yaml, phần containers:
+
+        env:
+        - name: LOG_LEVEL              # tên biến BÊN TRONG container
+          valueFrom:
+            configMapKeyRef:
+              name: app-config         # <- metadata.name của ConfigMap
+              key: LOG_LEVEL           # <- key trong phần data
+
+
+KIỂU B - Lấy TẤT CẢ biến một lúc (gọn, hay dùng nhất)
+
+        envFrom:
+        - configMapRef:
+            name: app-config           # nạp hết mọi key trong data thành biến môi trường
+
+
+KIỂU C - Gắn thành FILE trong container (dùng cho nginx.conf, application.yml...)
+
+        volumeMounts:
+        - name: config-volume
+          mountPath: /etc/nginx/conf.d # thư mục file sẽ xuất hiện
+        ...
+        volumes:
+        - name: config-volume
+          configMap:
+            name: app-config           # mỗi key trong data -> 1 file,
+                                       # tên file = key, nội dung file = value
+
+
+6. SỬA CONFIGMAP RỒI THÌ POD CÓ TỰ CẬP NHẬT KHÔNG?
+--------------------------------------------------
+- Gắn kiểu ENV (A, B)   -> KHÔNG. Biến môi trường chỉ đọc lúc container khởi động.
+                            Phải khởi động lại Pod:
+                                kubectl rollout restart deployment <ten-deployment>
+
+- Gắn kiểu VOLUME (C)   -> File trong container TỰ cập nhật (sau ~1 phút),
+                            NHƯNG ứng dụng bên trong thường vẫn phải reload
+                            thì mới đọc file mới.
+
+=> An toàn nhất: sửa ConfigMap xong thì rollout restart.
+
+
+7. LƯU Ý
+--------------------------------------------------
+- ConfigMap phải TỒN TẠI TRƯỚC khi Pod chạy. Gọi tên không có thật
+  -> Pod kẹt ở trạng thái CreateContainerConfigError.
+- ConfigMap và Pod PHẢI cùng namespace. Không dùng chéo namespace được.
+- Giới hạn dung lượng 1 MB. Cần lớn hơn -> dùng Volume thật.
+- ConfigMap KHÔNG tự gắn vào Pod. Không khai báo env/volume thì Pod không thấy gì cả.
+
+
+8. LỆNH HAY DÙNG
+--------------------------------------------------
+    kubectl apply -f configmap.yaml
+    kubectl get configmap                              # liệt kê (viết tắt: kubectl get cm)
+    kubectl get configmap app-config -o yaml           # xem toàn bộ nội dung
+    kubectl describe configmap app-config
+
+    # tạo nhanh không cần file YAML
+    kubectl create configmap app-config --from-literal=LOG_LEVEL=debug
+    kubectl create configmap nginx-config --from-file=nginx.conf
+
+    # kiểm tra biến đã vào container chưa
+    kubectl exec -it <ten-pod> -- env | grep LOG_LEVEL
+    kubectl exec -it <ten-pod> -- cat /etc/nginx/conf.d/nginx.conf
+
+    # áp dụng cấu hình mới
+    kubectl rollout restart deployment <ten-deployment>
+
+    kubectl delete -f configmap.yaml
+
+
+9. GHI NHỚ NGẮN
+--------------------------------------------------
+    Image = phần KHÔNG đổi  (code)
+    ConfigMap = phần HAY đổi (cấu hình)
+    Secret = phần BÍ MẬT     (password, key)
+
+    Tách được 3 thứ này ra thì 1 image chạy được ở mọi môi trường.

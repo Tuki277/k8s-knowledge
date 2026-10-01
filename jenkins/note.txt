@@ -1,0 +1,1 @@
+Jenkins không chỉ dùng để CI, mà còn dùng để làm những công việc cần auto

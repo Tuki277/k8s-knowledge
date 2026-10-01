@@ -1,0 +1,13 @@
+[Unit]
+Description=<Description>
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=<WorkingDirectory của jenkins>
+ExecStart=<connect script của jenkins nhớ đọc lưu ý ở install-agent.sh>
+User=<user đã tạo để chạy jenkins>
+Restart=always
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,104 @@
+# ============================================================
+# Service kiểu NodePort
+# Mục đích: mở 1 cổng cố định trên MỌI Node của cluster để truy cập
+# ứng dụng từ bên ngoài qua: http://<IP-của-Node>:<nodePort>
+# Luồng đi của gói tin:
+#   Client -> <NodeIP>:nodePort -> Service:port -> Pod:targetPort
+# ============================================================
+
+apiVersion: v1          # Service là object "core" (không có group), nên luôn là v1.
+                        # Tra cứu: kubectl explain service  |  kubectl api-resources | grep service
+kind: Service           # Loại object muốn tạo.
+
+metadata:
+  name: nginx-service   # TỰ ĐẶT. Đây cũng là DNS name trong cluster:
+                        #   nginx-service.<namespace>.svc.cluster.local
+                        # Pod khác gọi nhau qua tên này thay vì IP.
+
+  namespace: default    # LẤY TỪ: namespace mà Deployment đang chạy.
+                        # deployment/deployment.yaml không khai báo namespace -> mặc định là "default".
+                        # Service và Pod PHẢI cùng namespace thì selector mới tìm thấy nhau.
+                        # Kiểm tra: kubectl get deploy -A | grep nginx-deployment
+
+  labels:
+    app: nginx          # TỰ ĐẶT. Chỉ để phân loại/lọc chính Service này
+                        # (vd: kubectl get svc -l app=nginx). KHÔNG liên quan đến việc chọn Pod.
+
+spec:
+  type: NodePort        # Các kiểu: ClusterIP (mặc định, chỉ nội bộ)
+                        #            NodePort (mở cổng trên Node - đang dùng)
+                        #            LoadBalancer (xin LB từ cloud provider)
+                        #            ExternalName (trỏ tới DNS bên ngoài)
+
+  selector:
+    app: nginx          # ⭐ QUAN TRỌNG NHẤT - LẤY TỪ ĐÂU:
+                        # Lấy từ NHÃN CỦA POD, tức là khối:
+                        #   deployment.yaml -> spec.template.metadata.labels
+                        # trong file deployment/deployment.yaml:
+                        #     template:
+                        #       metadata:
+                        #         labels:
+                        #           app: nginx     <-- copy đúng cặp key: value này
+                        #
+                        # LƯU Ý: KHÔNG phải metadata.labels ở đầu Deployment,
+                        # mà là label của Pod template. Service chọn Pod, không chọn Deployment.
+                        #
+                        # Kiểm tra label thật của Pod đang chạy:
+                        #   kubectl get pods --show-labels
+                        # Kiểm tra Service đã "bắt" được Pod chưa (phải có IP, không được <none>):
+                        #   kubectl get endpoints nginx-service
+
+  ports:
+    - name: http        # TỰ ĐẶT. Bắt buộc phải có tên nếu Service mở từ 2 port trở lên.
+
+      protocol: TCP     # TCP (mặc định) | UDP | SCTP. Theo giao thức app đang dùng.
+
+      port: 80          # TỰ ĐẶT (cổng của chính Service - cổng phía ClusterIP).
+                        # Pod khác trong cluster gọi: http://nginx-service:80
+                        # Thường đặt trùng targetPort cho dễ nhớ, nhưng không bắt buộc.
+
+      targetPort: 80    # ⭐ LẤY TỪ: cổng mà CONTAINER đang lắng nghe, tức là:
+                        #   deployment.yaml -> spec.template.spec.containers[0].ports[0].containerPort
+                        # Trong deployment/deployment.yaml là:
+                        #     ports:
+                        #     - containerPort: 80    <-- lấy số 80 này
+                        # (image nginx:1.14.2 mặc định nghe cổng 80)
+                        #
+                        # Sai số này = Service vẫn "xanh" nhưng truy cập sẽ bị
+                        # connection refused / timeout.
+                        #
+                        # Có thể ghi bằng TÊN port nếu container đặt tên, ví dụ:
+                        #   containerPort: 80
+                        #   name: http        ->  targetPort: http
+
+      nodePort: 30080   # TỰ ĐẶT nhưng PHẢI nằm trong dải 30000-32767 (mặc định của cluster).
+                        # Đây là cổng mở trên mọi Node -> truy cập: http://<NodeIP>:30080
+                        # Nếu BỎ TRỐNG dòng này, Kubernetes tự cấp 1 cổng ngẫu nhiên trong dải đó
+                        # (xem lại bằng: kubectl get svc nginx-service).
+                        # Cổng đã bị Service khác chiếm -> tạo sẽ lỗi, phải đổi số.
+
+# ============================================================
+# BẢNG TÓM TẮT: giá trị nào lấy từ đâu
+# ------------------------------------------------------------
+# selector.app    <- deployment.yaml: spec.template.metadata.labels.app
+# targetPort      <- deployment.yaml: spec.template.spec.containers[].ports[].containerPort
+# namespace       <- namespace của Deployment (không khai báo = default)
+# port            <- tự chọn (cổng nội bộ cluster)
+# nodePort        <- tự chọn trong 30000-32767, hoặc để trống cho k8s tự cấp
+# name / labels   <- tự đặt
+# ============================================================
+#
+# CÁC LỆNH ĐỂ THỰC HÀNH:
+#   kubectl apply -f ../../deployment/deployment.yaml   # tạo Pod trước
+#   kubectl apply -f nodeport.yaml                      # rồi tạo Service
+#   kubectl get svc nginx-service                       # xem PORT(S): 80:30080/TCP
+#   kubectl get endpoints nginx-service                 # PHẢI thấy IP Pod -> selector đúng
+#   kubectl describe svc nginx-service                  # xem chi tiết + sự kiện
+#
+# LẤY IP NODE ĐỂ TRUY CẬP:
+#   kubectl get nodes -o wide                           # cột INTERNAL-IP
+#   minikube:      minikube service nginx-service --url
+#   kind/Docker:   kubectl port-forward svc/nginx-service 8080:80
+#
+# XÓA:
+#   kubectl delete -f nodeport.yaml

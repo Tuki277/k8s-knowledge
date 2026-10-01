@@ -1,0 +1,15 @@
+- install rancher
+
+- install jenkins
+
+- install postgres
+
+- install redis
+
+- backend connect pg and redis
+
+- frontend connect to backend
+
+- elk stack
+
+- apm server

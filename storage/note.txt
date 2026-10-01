@@ -1,0 +1,143 @@
+STORAGE = NƠI LƯU DỮ LIỆU để không bị mất khi Pod chết.
+
+VẤN ĐỀ GỐC:
+    Pod là thứ dùng một lần. Pod chết -> k8s tạo Pod MỚI hoàn toàn,
+    mọi thứ ghi bên trong container ĐỀU MẤT SẠCH.
+    -> Database, file người dùng upload, log... không thể để trong container.
+
+=> Phải gắn một "ổ đĩa" từ BÊN NGOÀI vào Pod. Đó là Volume.
+
+
+1. BỨC TRANH TỔNG THỂ - 3 THÀNH PHẦN
+--------------------------------------------------
+    StorageClass  ->  PersistentVolume (PV)  ->  PersistentVolumeClaim (PVC)  ->  Pod
+    (loại ổ đĩa)      (ổ đĩa thật)               (đơn xin cấp ổ đĩa)             (người dùng)
+
+Ví von cho dễ nhớ - GIỐNG THUÊ NHÀ:
+
+    StorageClass : LOẠI NHÀ + công ty xây nhà  ("chung cư cao cấp", "nhà trọ")
+    PV           : CĂN NHÀ CỤ THỂ đã xây xong  (căn 302, 50m2)
+    PVC          : ĐƠN XIN THUÊ                ("tôi cần 50m2, loại cao cấp")
+    Pod          : NGƯỜI Ở                     (dọn vào ở)
+
+    -> Pod KHÔNG bao giờ gọi thẳng PV. Pod chỉ cầm PVC.
+    -> Giống như bạn chỉ cầm hợp đồng thuê, không cần biết ai xây căn nhà đó.
+
+
+2. VÌ SAO PHẢI TÁCH PV VÀ PVC RA LÀM 2?
+--------------------------------------------------
+Để TÁCH VAI TRÒ:
+
+    Admin hạ tầng  -> lo PV / StorageClass  (ổ đĩa nằm ở đâu, AWS hay NFS, bao nhiêu GB)
+    Dev viết app   -> chỉ viết PVC          ("tôi cần 10GB, ghi được") - KHÔNG cần biết hạ tầng
+
+=> File YAML của app chạy được ở MỌI cluster (local, AWS, GCP)
+   vì nó chỉ nói "tôi cần 10GB", còn ai cấp thì tùy nơi.
+
+
+3. CÁC LOẠI VOLUME - TỪ TẠM BỢ ĐẾN BỀN VỮNG
+--------------------------------------------------
+(a) emptyDir - Ổ ĐĨA TẠM
+    Sinh ra khi Pod sinh, XÓA SẠCH khi Pod chết.
+    Dùng để: chứa file tạm, cache, chia sẻ file giữa 2 container trong CÙNG 1 Pod.
+    -> KHÔNG dùng cho dữ liệu quan trọng.
+
+(b) hostPath - MƯỢN Ổ ĐĨA CỦA NODE
+    Gắn thẳng 1 thư mục trên máy Node vào Pod.
+    ⚠️ NGUY HIỂM: Pod chuyển sang Node khác là MẤT dữ liệu (vì dữ liệu nằm ở Node cũ).
+    -> Chỉ dùng khi học hoặc chạy 1 Node (minikube).
+
+(c) configMap / secret - GẮN CẤU HÌNH THÀNH FILE
+    Cũng là volume, nhưng CHỈ ĐỌC. Đã học ở config-map/ và secret/.
+
+(d) PersistentVolume (PV) - Ổ ĐĨA THẬT, BỀN VỮNG  <- QUAN TRỌNG NHẤT
+    Nằm NGOÀI cluster: AWS EBS, Google Disk, NFS, Ceph...
+    Pod chết, Node chết, xóa cả Deployment -> DỮ LIỆU VẪN CÒN.
+    -> Đây là thứ dùng thật cho database.
+
+
+4. HAI CÁCH TẠO PV
+--------------------------------------------------
+(a) STATIC (thủ công) - admin viết sẵn file pv.yaml, tạo ổ đĩa trước
+    Dev viết PVC -> k8s tìm PV nào đang rảnh và vừa kích thước -> ghép lại (Bound)
+    -> Dùng khi ổ đĩa đã có sẵn (NFS của công ty).
+
+(b) DYNAMIC (tự động) - CÁCH DÙNG THẬT NGÀY NAY  <- NÊN DÙNG
+    KHÔNG cần viết PV. Chỉ viết PVC + chỉ định StorageClass.
+    -> k8s TỰ gọi cloud tạo ổ đĩa, TỰ tạo PV, TỰ ghép vào PVC.
+    -> Đây là lý do StorageClass tồn tại.
+
+
+5. TRẠNG THÁI (kubectl get pv / pvc)
+--------------------------------------------------
+    Available   - PV đang rảnh, chưa ai thuê
+    Bound       - ĐÃ GHÉP với PVC -> ĐÚNG, dùng được
+    Pending     - PVC chưa tìm được PV nào phù hợp  -> LỖI HAY GẶP NHẤT
+    Released    - PVC bị xóa rồi, PV còn dữ liệu cũ, CHƯA dùng lại được ngay
+    Failed      - lỗi thu hồi
+
+    PVC kẹt Pending, kiểm tra theo thứ tự:
+        1. kubectl describe pvc <ten>       -> đọc phần Events, nó nói rõ lý do
+        2. Không có StorageClass mặc định?  -> kubectl get sc
+        3. Xin nhiều GB hơn PV đang có?
+        4. accessModes không khớp với PV?
+
+
+6. ACCESS MODES - AI ĐƯỢC GHI?
+--------------------------------------------------
+    RWO (ReadWriteOnce)   - chỉ 1 NODE được gắn và ghi.  <- phổ biến nhất
+                            AWS EBS, Google Disk chỉ hỗ trợ kiểu này.
+                            Dùng cho: database.
+
+    ROX (ReadOnlyMany)    - nhiều Node đọc, không ai ghi.
+
+    RWX (ReadWriteMany)   - NHIỀU Node cùng ghi.
+                            Cần NFS / CephFS / AWS EFS. Ổ đĩa thường KHÔNG làm được.
+                            Dùng cho: nhiều Pod cùng ghi file upload.
+
+⚠️ Đây là chỗ hay vấp: để RWX nhưng cluster chỉ có ổ đĩa thường -> PVC kẹt Pending mãi.
+
+
+7. XÓA PVC RỒI THÌ DỮ LIỆU RA SAO? (reclaimPolicy)
+--------------------------------------------------
+    Delete  - XÓA LUÔN ổ đĩa và dữ liệu.  <- MẶC ĐỊNH của dynamic provisioning
+              ⚠️ Lỡ tay xóa PVC của database production là mất sạch.
+    Retain  - GIỮ LẠI dữ liệu, PV chuyển sang Released, admin xử lý tay.
+              -> Production PHẢI dùng Retain cho dữ liệu quan trọng.
+
+
+8. LƯU Ý QUAN TRỌNG
+--------------------------------------------------
+- PVC và Pod PHẢI CÙNG NAMESPACE. (PV thì không thuộc namespace nào - nó toàn cluster)
+- Deployment + PVC kiểu RWO mà scale lên nhiều Pod -> các Pod đánh nhau tranh ổ đĩa.
+  -> Database nhiều bản phải dùng StatefulSet (mỗi Pod có PVC riêng), KHÔNG dùng Deployment.
+- Ổ đĩa nở ra được nhưng KHÔNG co lại được. Tăng dung lượng thì OK, giảm thì không.
+
+
+9. LỆNH HAY DÙNG
+--------------------------------------------------
+    kubectl get sc                      # xem các StorageClass có sẵn (cái nào (default))
+    kubectl get pv                      # ổ đĩa thật - xem toàn cluster
+    kubectl get pvc                     # đơn xin - theo namespace
+
+    kubectl describe pvc <ten>          # ⭐ lệnh số 1 để debug khi PVC kẹt Pending
+    kubectl get pvc <ten> -o yaml
+
+    # kiểm tra dữ liệu có thật sự bền không - LÀM THỬ 1 LẦN CHO NHỚ:
+    kubectl exec -it <pod> -- sh -c "echo hello > /data/test.txt"
+    kubectl delete pod <pod>            # xóa Pod đi
+    kubectl exec -it <pod-moi> -- cat /data/test.txt   # vẫn còn "hello" -> ĐÚNG
+
+
+10. GHI NHỚ NGẮN
+--------------------------------------------------
+    Không có volume -> Pod chết là MẤT dữ liệu.
+
+    StorageClass : loại ổ đĩa + người tự động tạo ổ  (admin lo)
+    PV           : ổ đĩa thật                        (admin lo / tự sinh)
+    PVC          : đơn xin ổ đĩa                     (DEV CHỈ CẦN VIẾT CÁI NÀY)
+
+    Thực tế ngày nay: chỉ viết PVC, để StorageClass tự đẻ ra PV.
+
+(chi tiết từng phần xem trong các thư mục con:
+    persistent-volume/  persistent-volume-claim/  storage-class/)

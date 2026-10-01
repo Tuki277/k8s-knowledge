@@ -1,0 +1,131 @@
+# ============================================================
+# StorageClass (SC) = LOẠI Ổ ĐĨA + NGƯỜI TỰ ĐỘNG TẠO Ổ ĐĨA
+#
+# Ví von thuê nhà:  SC = LOẠI NHÀ + công ty xây nhà
+#                        ("chung cư cao cấp" / "nhà trọ")
+#
+# TÁC DỤNG LỚN NHẤT: DYNAMIC PROVISIONING
+#   Không cần admin viết pv.yaml tay nữa.
+#   Dev viết PVC -> SC TỰ gọi cloud tạo ổ đĩa -> TỰ tạo PV -> TỰ ghép.
+#
+# ⚠️ SC KHÔNG thuộc namespace nào - tài nguyên TOÀN CLUSTER.
+#
+# ⚠️ CLUSTER THƯỜNG ĐÃ CÓ SẴN SC MẶC ĐỊNH, ít khi phải tự viết.
+#    Kiểm tra trước:  kubectl get sc
+#    (minikube có sẵn "standard", AWS EKS có "gp2")
+# ============================================================
+
+apiVersion: storage.k8s.io/v1   # ⚠️ SC thuộc group "storage.k8s.io", KHÔNG phải v1 trần
+                                # (PV/PVC mới là v1)
+kind: StorageClass
+
+metadata:
+  name: fast-ssd                # ⭐ TỰ ĐẶT. PVC gọi lại ĐÚNG tên này ở storageClassName.
+                                # Nên đặt theo ĐẶC TÍNH: fast-ssd, slow-hdd, standard
+                                # -> dev đọc tên là biết chọn cái nào.
+
+  annotations:
+    storageclass.kubernetes.io/is-default-class: "false"
+                                # ⭐ "true" = SC MẶC ĐỊNH của cluster.
+                                # PVC nào KHÔNG ghi storageClassName sẽ dùng cái này.
+                                # ⚠️ Chỉ được để ĐÚNG 1 SC là default.
+                                #    Nhiều cái true -> k8s không biết chọn cái nào.
+
+# --- provisioner: AI LÀ NGƯỜI TẠO Ổ ĐĨA THẬT ---
+provisioner: kubernetes.io/no-provisioner
+                                # ⭐ Đây là phần PHỤ THUỘC HẠ TẦNG - mỗi nơi một khác:
+                                #
+                                #   kubernetes.io/no-provisioner  -> KHÔNG tự tạo (local/học)
+                                #   k8s.io/minikube-hostpath      -> minikube
+                                #   ebs.csi.aws.com               -> AWS EBS
+                                #   pd.csi.storage.gke.io         -> Google Cloud
+                                #   disk.csi.azure.com            -> Azure
+                                #   nfs.csi.k8s.io                -> NFS (hỗ trợ RWX)
+                                #
+                                # Ghi sai provisioner -> PVC kẹt Pending vĩnh viễn.
+
+# --- parameters: THAM SỐ RIÊNG của từng provisioner ---
+parameters: {}
+                                # Để trống vì no-provisioner không cần tham số.
+                                #
+                                # VD với AWS EBS thì sẽ là:
+                                #   parameters:
+                                #     type: gp3              # loại ổ: gp2, gp3, io1
+                                #     fsType: ext4
+                                #     encrypted: "true"      # mã hóa ổ đĩa
+                                #
+                                # Muốn biết tham số nào hợp lệ -> đọc tài liệu của CSI driver.
+
+reclaimPolicy: Delete           # ⭐ XÓA PVC RỒI THÌ Ổ ĐĨA RA SAO:
+                                #   Delete - XÓA LUÔN ổ đĩa + dữ liệu  (MẶC ĐỊNH)
+                                #   Retain - GIỮ lại dữ liệu
+                                #
+                                # ⚠️ Production dùng cho DATABASE -> ĐỔI SANG Retain.
+                                #    Để Delete mà lỡ tay xóa PVC là mất sạch dữ liệu thật.
+
+allowVolumeExpansion: true      # Cho phép TĂNG dung lượng sau này
+                                # (sửa requests.storage trong PVC rồi apply lại).
+                                # ⚠️ Chỉ NỞ RA được, KHÔNG CO LẠI được.
+                                # Để false -> muốn tăng phải tạo PVC mới, copy dữ liệu sang.
+
+volumeBindingMode: WaitForFirstConsumer
+                                # ⭐ KHI NÀO MỚI TẠO Ổ ĐĨA THẬT:
+                                #
+                                #   Immediate              - tạo NGAY khi PVC được tạo
+                                #   WaitForFirstConsumer   - CHỜ đến khi có Pod thật sự dùng
+                                #
+                                # VÌ SAO NÊN DÙNG WaitForFirstConsumer:
+                                #   Tạo ổ đĩa trước khi biết Pod chạy ở Node nào
+                                #   -> ổ đĩa có thể nằm ở vùng (zone) khác với Pod
+                                #   -> Pod KHÔNG gắn được -> kẹt Pending.
+                                #   Chờ Pod xếp Node xong mới tạo ổ ĐÚNG CHỖ.
+
+# ============================================================
+# CÁCH DÙNG: PVC chỉ cần gọi tên SC
+# ------------------------------------------------------------
+#   apiVersion: v1
+#   kind: PersistentVolumeClaim
+#   metadata:
+#     name: my-dynamic-pvc
+#   spec:
+#     accessModes:
+#       - ReadWriteOnce
+#     resources:
+#       requests:
+#         storage: 10Gi
+#     storageClassName: fast-ssd     # <- metadata.name của SC ở trên
+#
+# => KHÔNG cần viết pv.yaml. k8s tự tạo PV rồi ghép vào.
+#
+# ============================================================
+# 3 CÁCH GHI storageClassName TRONG PVC - PHÂN BIỆT KỸ
+# ------------------------------------------------------------
+#   storageClassName: fast-ssd   -> dùng SC tên fast-ssd (tự tạo PV mới)
+#   storageClassName: ""         -> KHÔNG dùng SC nào, chỉ ghép PV tạo tay
+#   (bỏ trống cả dòng)           -> dùng SC MẶC ĐỊNH của cluster
+# ============================================================
+#
+# BẢNG TÓM TẮT: giá trị nào lấy từ đâu
+# ------------------------------------------------------------
+# name                 <- tự đặt, PVC gọi lại qua storageClassName
+# provisioner          <- PHỤ THUỘC HẠ TẦNG (AWS/GCP/minikube/NFS) - tra tài liệu
+# parameters           <- tham số riêng của provisioner đó
+# reclaimPolicy        <- Delete (mặc định) / Retain (cho production)
+# volumeBindingMode    <- WaitForFirstConsumer (nên dùng) / Immediate
+# ============================================================
+#
+# CÁC LỆNH ĐỂ THỰC HÀNH:
+#   kubectl get sc                         # ⭐ XEM CLUSTER ĐÃ CÓ SẴN GÌ (làm cái này TRƯỚC)
+#                                          # cột NAME có chữ (default) = SC mặc định
+#   kubectl apply -f storageclass.yaml
+#   kubectl describe sc fast-ssd
+#
+#   # đổi SC mặc định sang cái khác
+#   kubectl patch sc fast-ssd -p '{"metadata":{"annotations":{"storageclass.kubernetes.io/is-default-class":"true"}}}'
+#
+# ⚠️ SC ĐÃ TẠO RỒI THÌ KHÔNG SỬA ĐƯỢC (immutable).
+#    Muốn đổi tham số -> phải xóa đi tạo lại.
+#    (PV đã sinh ra từ SC cũ vẫn giữ nguyên, không bị ảnh hưởng)
+#
+# XÓA:
+#   kubectl delete -f storageclass.yaml

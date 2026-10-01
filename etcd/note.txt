@@ -1,0 +1,56 @@
+ETCD - cơ sở dữ liệu (database) của Kubernetes, lưu toàn bộ TRẠNG THÁI của cluster
+
+- Khái niệm
+    - Là kho lưu trữ dạng key-value (giống một cuốn từ điển khổng lồ)
+    - Hình dung: K8s là một công ty, etcd là "sổ sách ghi chép chính thức"
+        -> mất sổ thì công ty không biết mình đang có gì
+
+- Lưu những gì
+    - Mọi resource tạo bằng kubectl apply:
+        - Pod, Deployment, DaemonSet, StatefulSet
+        - Service, Ingress
+        - ConfigMap, Secret
+        - PV, PVC, StorageClass
+        - Node, Namespace, RBAC...
+    - Ví dụ key: /registry/deployments/default/nginx
+    - KHÔNG lưu dữ liệu của ứng dụng (dữ liệu Postgres, metric Prometheus... nằm trong PV)
+
+- Cách hoạt động
+    kubectl  --->  kube-apiserver  --->  etcd
+                        ^
+       scheduler, controller-manager, kubelet
+
+    - CHỈ kube-apiserver nói chuyện trực tiếp với etcd, các thành phần khác phải đi qua API server
+    - kubectl apply -> API server ghi trạng thái mong muốn vào etcd
+    - Các controller theo dõi thay đổi -> tạo/xóa Pod để trạng thái thực tế khớp với mong muốn
+
+- Đặc điểm
+    - Nhất quán: dùng thuật toán Raft, mọi thành viên etcd luôn thống nhất một phiên bản dữ liệu
+    - Chịu lỗi: chạy nhiều bản, thường 3 hoặc 5 (số lẻ)
+        - Cluster vẫn chạy nếu còn QUÁ NỬA số bản sống (3 bản -> chịu được 1 bản chết)
+    - Watch: thành phần khác có thể theo dõi một key, có thay đổi là được báo ngay
+
+- Vì sao quan trọng
+    - etcd chết:
+        - API server không đọc/ghi được, kubectl báo lỗi, không tạo/sửa/xóa được resource
+        - Pod đang chạy vẫn chạy tiếp, nhưng cluster như bị "đóng băng"
+    - Mất dữ liệu etcd = mất toàn bộ cấu hình cluster -> PHẢI backup định kỳ
+    - Bảo mật: Secret lưu trong etcd chỉ ở dạng base64 (KHÔNG mã hóa)
+        -> ai đọc được etcd là đọc được mọi Secret
+        -> production nên bật encryption at rest (mã hóa khi lưu)
+
+- Backup etcd
+    ETCDCTL_API=3 etcdctl snapshot save backup.db \
+      --endpoints=https://127.0.0.1:2379 \
+      --cacert=/etc/kubernetes/pki/etcd/ca.crt \
+      --cert=/etc/kubernetes/pki/etcd/server.crt \
+      --key=/etc/kubernetes/pki/etcd/server.key
+
+- Xem etcd trên cluster (Docker Desktop: etcd chạy dưới dạng pod trong namespace kube-system)
+    - kubectl get pods -n kube-system | findstr etcd      # PowerShell
+    - kubectl get pods -n kube-system | grep etcd         # Linux
+
+=> Tóm lại
+    - etcd là "bộ não ghi nhớ" của K8s
+    - API server là người duy nhất được đọc/ghi vào etcd
+    - Mọi thành phần khác làm việc dựa trên những gì etcd đang lưu

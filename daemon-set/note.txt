@@ -1,0 +1,56 @@
+DaemonSet - đảm bảo MỖI NODE trong cluster luôn chạy đúng 1 bản sao của một Pod
+
+- Hình dung
+    - Cluster như một tòa nhà nhiều tầng, mỗi tầng là một node
+    - DaemonSet như quy định "mỗi tầng phải có đúng 1 bảo vệ"
+    - Thêm node mới  -> tự động tạo Pod trên node đó
+    - Xóa node       -> Pod trên node đó cũng bị xóa theo
+
+- So sánh với Deployment
+    - Deployment
+        - Tự chọn số lượng Pod (replicas: 3)
+        - Scheduler tự chọn node, có thể dồn nhiều Pod vào cùng 1 node
+        - Dùng cho ứng dụng (web, API...)
+    - DaemonSet
+        - Số Pod = số node, mỗi node 1 Pod (không có trường replicas)
+        - Rải đều, node nào cũng có
+        - Dùng cho các tác vụ hạ tầng cần có mặt trên mọi node
+
+- Khi nào dùng
+    - Thu thập log: Fluentd, Fluent Bit, Filebeat
+    - Giám sát (monitoring): Prometheus Node Exporter, Datadog agent
+    - Mạng: CNI plugin (Calico, Cilium), kube-proxy
+    - Lưu trữ: Ceph, CSI node plugin
+
+- Ví dụ YAML
+
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: log-agent
+spec:
+  selector:
+    matchLabels:
+      app: log-agent
+  template:
+    metadata:
+      labels:
+        app: log-agent
+    spec:
+      containers:
+      - name: fluent-bit
+        image: fluent/fluent-bit:latest
+
+- Lệnh hay dùng
+    - kubectl get daemonset -A                     # xem tất cả DaemonSet
+    - kubectl get pods -o wide -l app=log-agent    # xem Pod nằm trên node nào
+    - kubectl describe ds log-agent
+
+- Mẹo
+    - Chỉ chạy trên một số node: dùng nodeSelector hoặc nodeAffinity (vd: chỉ node có GPU)
+    - Muốn chạy cả trên node control-plane: node này thường có taint -> thêm tolerations
+    - Cập nhật: mặc định RollingUpdate, thay Pod lần lượt từng node một
+
+=> Tóm lại
+    - Deployment: "cần bao nhiêu bản?"
+    - DaemonSet:  "node nào cũng phải có 1 bản"

@@ -1,0 +1,88 @@
+kustomization.yaml là file cấu hình trung tâm của Kustomize — một công cụ quản lý cấu hình Kubernetes được tích hợp sẵn trong kubectl (từ phiên bản 1.14 trở lên). Nó cho phép bạn tùy biến các manifest YAML gốc mà không cần chỉnh sửa trực tiếp file gốc, thông qua cơ chế overlay.
+
+Kustomize giải quyết vấn đề gì?
+Giả sử bạn có cùng một ứng dụng nhưng cần triển khai ở nhiều môi trường (dev, staging, production) với các khác biệt nhỏ về replica, image tag, resource limit. Thay vì copy toàn bộ YAML cho mỗi môi trường rồi sửa thủ công, bạn giữ một bộ manifest gốc (base) và tạo các overlay để ghi đè những gì cần thay đổi.
+
+Cấu trúc thư mục điển hình
+text
+my-app/
+├── base/
+│   ├── kustomization.yaml
+│   ├── deployment.yaml
+│   └── service.yaml
+└── overlays/
+    ├── dev/
+    │   └── kustomization.yaml
+    └── prod/
+        └── kustomization.yaml
+File kustomization.yaml trong thư mục base
+yaml
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - deployment.yaml
+  - service.yaml
+
+commonLabels:
+  app: my-app
+File này khai báo những tài nguyên nào thuộc về base và các nhãn chung áp dụng cho tất cả.
+
+File kustomization.yaml trong overlay prod
+yaml
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - ../../base
+
+namespace: production
+
+replicas:
+  - name: my-app
+    count: 5
+
+images:
+  - name: my-app
+    newTag: v1.2.3
+Overlay này kế thừa toàn bộ base, sau đó:
+
+Đổi namespace thành production
+
+Tăng replica lên 5
+
+Ghi đè image tag thành v1.2.3
+
+Các trường phổ biến trong kustomization.yaml
+Trường	Chức năng
+resources	Danh sách file/thư mục manifest cần đưa vào
+namespace	Gán namespace cho tất cả tài nguyên
+namePrefix / nameSuffix	Thêm tiền tố/hậu tố vào tên tài nguyên
+commonLabels	Thêm label chung cho mọi tài nguyên
+images	Ghi đè image name/tag mà không sửa file gốc
+replicas	Ghi đè số lượng replica
+patches	Áp dụng patch để sửa đổi chi tiết
+configMapGenerator	Tạo ConfigMap từ file/thư mục
+secretGenerator	Tạo Secret từ file
+Cách sử dụng
+Xem trước output mà không apply:
+
+bash
+kubectl kustomize overlays/prod
+Apply trực tiếp:
+
+bash
+kubectl apply -k overlays/prod
+Build ra file để kiểm tra:
+
+bash
+kubectl kustomize overlays/prod > rendered.yaml
+Kustomize vs Helm
+Tiêu chí	Kustomize	Helm
+Cách tiếp cận	Overlay/merge YAML	Template với values
+Độ phức tạp	Thấp, thuần YAML	Cao hơn, có template engine
+Tích hợp kubectl	Có sẵn (-k)	Cần cài riêng
+Phù hợp	Tùy biến manifest có sẵn	Đóng gói và phân phối ứng dụng
+Kustomize thường được dùng khi bạn đã có manifest YAML và chỉ cần tùy biến nhẹ theo môi trường, trong khi Helm mạnh hơn ở việc đóng gói và chia sẻ ứng dụng dưới dạng chart có tham số hóa.
+
+Với mục đích lab, Kustomize giúp bạn tổ chức manifest gọn gàng và tránh việc copy-paste YAML giữa các môi trường.

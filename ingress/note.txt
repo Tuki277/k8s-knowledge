@@ -1,0 +1,82 @@
+Ingress = "lễ tân" của cluster, đứng trước các Service để phân luồng traffic HTTP/HTTPS
+dựa vào TÊN MIỀN và ĐƯỜNG DẪN (URL).
+
+Luồng đi:
+    Người dùng -> Domain (DNS) -> Ingress Controller -> Ingress rule -> Service -> Pod
+
+
+1. VÌ SAO CẦN INGRESS?
+--------------------------------------------------
+Nếu chỉ dùng Service:
+    - NodePort: phải nhớ IP + port xấu xí (http://192.168.1.10:30080), không dùng được domain đẹp,
+      mỗi app lại tốn 1 port trong dải 30000-32767.
+    - LoadBalancer: mỗi app 1 Load Balancer riêng -> tốn tiền (cloud tính phí theo từng LB).
+
+Ingress giải quyết:
+    - CHỈ CẦN 1 điểm vào duy nhất (1 IP / 1 LB) cho rất nhiều ứng dụng.
+    - Truy cập bằng domain thật: shop.example.com, api.example.com
+    - Cài HTTPS/SSL tập trung tại một chỗ, không phải cấu hình trong từng app.
+
+
+2. HAI THỨ KHÁC NHAU - DỄ NHẦM NHẤT
+--------------------------------------------------
+- Ingress (object YAML)    = TỜ GIẤY ghi luật: "domain này, path này -> đi tới Service nào".
+                             Bản thân nó KHÔNG làm gì cả.
+
+- Ingress Controller       = NGƯỜI THỰC THI luật đó. Là một Pod thật đang chạy trong cluster
+                             (thường là nginx / traefik / haproxy).
+
+=> Chưa cài Ingress Controller thì có tạo Ingress cũng KHÔNG chạy.
+   Khác với Pod / Deployment / Service (k8s tự xử lý sẵn).
+
+   Kiểm tra đã có controller chưa:
+       kubectl get pods -n ingress-nginx
+   Cài cho minikube:
+       minikube addons enable ingress
+
+
+3. HAI KIỂU ĐỊNH TUYẾN
+--------------------------------------------------
+- Theo tên miền (host-based):
+        shop.example.com  -> service-shop
+        api.example.com   -> service-api
+
+- Theo đường dẫn (path-based):
+        example.com/shop  -> service-shop
+        example.com/api   -> service-api
+
+
+4. CÁC TRƯỜNG QUAN TRỌNG TRONG FILE YAML
+--------------------------------------------------
+- ingressClassName : chọn controller nào xử lý (thường là "nginx")
+- host             : tên miền muốn nhận request
+- path             : đường dẫn URL
+- pathType         : Prefix (khớp phần đầu, hay dùng nhất) | Exact (khớp tuyệt đối)
+- backend.service.name : LẤY TỪ metadata.name của Service (KHÔNG phải tên Pod/Deployment)
+- backend.service.port.number : LẤY TỪ spec.ports[].port của Service (cổng Service, không phải targetPort)
+- tls              : khai báo Secret chứa chứng chỉ để bật HTTPS
+
+
+5. GIỚI HẠN
+--------------------------------------------------
+- Ingress CHỈ dùng cho HTTP và HTTPS.
+- Cần TCP/UDP thuần (database, game server...) -> dùng NodePort hoặc LoadBalancer.
+
+
+6. GHI NHỚ NGẮN
+--------------------------------------------------
+    Service : đưa traffic tới đúng Pod        (làm việc với IP + port)
+    Ingress : đưa traffic tới đúng Service    (làm việc với domain + path)
+
+    Ingress KHÔNG thay thế Service. Vẫn phải có Service ở giữa.
+
+
+7. LỆNH HAY DÙNG
+--------------------------------------------------
+    kubectl get ingress
+    kubectl describe ingress <ten-ingress>     # xem rule + kiểm tra lỗi
+    kubectl get pods -n ingress-nginx          # controller đã chạy chưa
+    kubectl get ingressclass                   # có những class nào
+
+    Test khi chưa có DNS thật -> sửa file /etc/hosts:
+        <IP-cua-ingress>   shop.example.com

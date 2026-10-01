@@ -1,0 +1,119 @@
+# ============================================================
+# PVC (PersistentVolumeClaim) = ĐƠN XIN CẤP Ổ ĐĨA
+#
+# Ví von thuê nhà:  PVC = ĐƠN XIN THUÊ ("tôi cần 50m2, loại cao cấp")
+#
+# ⭐ ĐÂY LÀ FILE DUY NHẤT DEV CẦN VIẾT.
+#    Dev KHÔNG cần biết ổ đĩa nằm ở AWS hay NFS - chỉ nói "tôi cần bao nhiêu GB".
+#    -> Nhờ vậy file YAML của app chạy được ở MỌI cluster.
+#
+# ⚠️ PVC CÓ namespace (khác PV). PVC và Pod PHẢI CÙNG namespace.
+# ============================================================
+
+apiVersion: v1                  # PVC là object "core" -> v1
+kind: PersistentVolumeClaim
+
+metadata:
+  name: my-pvc                  # ⭐ TỰ ĐẶT - NHỚ KỸ tên này.
+                                # Pod/Deployment sẽ gọi lại đúng tên này ở:
+                                #   volumes.persistentVolumeClaim.claimName
+
+  namespace: default            # PHẢI CÙNG namespace với Pod dùng nó.
+
+spec:
+  accessModes:
+    - ReadWriteOnce             # ⭐ PHẢI KHỚP với accessModes của PV.
+                                # PV có RWO mà đây xin RWX -> KHÔNG ghép được -> Pending mãi.
+
+  resources:
+    requests:
+      storage: 500Mi            # ⭐ XIN BAO NHIÊU.
+                                # PHẢI <= capacity của PV (pv.yaml đang có 1Gi).
+                                # Xin 5Gi -> không PV nào đủ -> Pending.
+                                #
+                                # LƯU Ý: xin 500Mi mà ghép vào PV 1Gi
+                                # -> vẫn dùng được TRỌN 1Gi (k8s không cắt nhỏ PV).
+
+  storageClassName: manual      # ⭐ PHẢI TRÙNG CHUỖI với storageClassName của PV.
+                                #   pv.yaml -> spec.storageClassName: manual
+                                #
+                                # 3 TRƯỜNG HỢP HAY NHẦM:
+                                #   ghi "manual"  -> tìm PV có storageClassName: manual
+                                #   ghi ""        -> KHÔNG dùng StorageClass, chỉ ghép PV tạo tay
+                                #   BỎ TRỐNG dòng -> dùng StorageClass MẶC ĐỊNH của cluster
+                                #                    -> TỰ ĐỘNG tạo PV mới (dynamic)
+
+  # --- (tùy chọn) ép chọn ĐÚNG 1 PV cụ thể qua nhãn ---
+  # selector:
+  #   matchLabels:
+  #     type: local             # <- lấy từ pv.yaml: metadata.labels.type
+
+# ============================================================
+# CÁCH DÙNG THẬT NGÀY NAY - DYNAMIC (không cần viết pv.yaml)
+# ------------------------------------------------------------
+# Chỉ đổi storageClassName sang tên một StorageClass có sẵn:
+#
+#   spec:
+#     accessModes:
+#       - ReadWriteOnce
+#     resources:
+#       requests:
+#         storage: 10Gi
+#     storageClassName: standard      # minikube: standard | AWS: gp2, gp3
+#                                     # xem có gì: kubectl get sc
+#
+# => k8s TỰ gọi cloud tạo ổ đĩa, TỰ tạo PV, TỰ ghép vào PVC.
+#    Không cần admin viết PV tay.
+#
+# ============================================================
+# GẮN PVC VÀO POD - chép vào deployment.yaml (spec.template.spec)
+# ------------------------------------------------------------
+#
+#     spec:
+#       containers:
+#       - name: nginx
+#         image: nginx:1.14.2
+#         volumeMounts:
+#         - name: data-volume           # phải TRÙNG tên với volumes.name bên dưới
+#           mountPath: /usr/share/nginx/html   # thư mục ổ đĩa xuất hiện trong container
+#                                              # ⚠️ mountPath GHI ĐÈ thư mục này,
+#                                              #    file có sẵn trong image sẽ biến mất
+#       volumes:                        # ngang hàng với containers:
+#       - name: data-volume             # tên nội bộ, tự đặt
+#         persistentVolumeClaim:
+#           claimName: my-pvc           # <- metadata.name của PVC ở trên
+#
+# ⚠️ Deployment + PVC kiểu RWO mà replicas > 1
+#    -> các Pod đánh nhau tranh ổ đĩa, Pod thứ 2 kẹt ContainerCreating.
+#    -> Database nhiều bản phải dùng StatefulSet (mỗi Pod 1 PVC riêng).
+#
+# ============================================================
+# BẢNG TÓM TẮT: giá trị nào lấy từ đâu
+# ------------------------------------------------------------
+# name              <- tự đặt, Pod gọi lại qua claimName
+# namespace         <- namespace của Pod sẽ dùng
+# accessModes       <- PHẢI khớp accessModes của PV
+# requests.storage  <- PHẢI <= capacity của PV
+# storageClassName  <- PHẢI trùng chuỗi với PV (hoặc tên SC nếu dùng dynamic)
+# ============================================================
+#
+# CÁC LỆNH ĐỂ THỰC HÀNH:
+#   kubectl apply -f ../persistent-volume/pv.yaml     # tạo PV trước
+#   kubectl apply -f pvc.yaml                         # rồi tạo PVC
+#   kubectl get pvc                                   # STATUS phải là Bound
+#   kubectl get pv                                    # cột CLAIM hiện default/my-pvc
+#
+# ⚠️ PVC KẸT Pending - DEBUG THEO THỨ TỰ:
+#   kubectl describe pvc my-pvc       # ĐỌC PHẦN Events - nó nói rõ lý do
+#   kubectl get sc                    # có StorageClass mặc định không?
+#   -> thường là: storageClassName không trùng / xin nhiều GB hơn PV có
+#      / accessModes không khớp
+#
+# KIỂM TRA DỮ LIỆU CÓ THẬT SỰ BỀN KHÔNG (làm 1 lần cho nhớ):
+#   kubectl exec -it <pod> -- sh -c "echo hello > /usr/share/nginx/html/test.txt"
+#   kubectl delete pod <pod>                          # xóa Pod
+#   kubectl exec -it <pod-moi> -- cat /usr/share/nginx/html/test.txt
+#   -> vẫn còn "hello" nghĩa là ĐÚNG
+#
+# XÓA:
+#   kubectl delete -f pvc.yaml        # xóa PVC TRƯỚC, rồi mới xóa PV

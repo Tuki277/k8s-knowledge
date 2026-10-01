@@ -1,0 +1,144 @@
+# ============================================================
+# ConfigMap - nơi cất CẤU HÌNH, tách riêng khỏi image
+#
+# Ý tưởng: code đóng gói 1 lần, cấu hình đổi theo môi trường.
+#          Sửa cấu hình -> apply lại file này, KHÔNG cần build lại image.
+#
+# ⚠️ TUYỆT ĐỐI KHÔNG để password / api key / token vào đây.
+#    ConfigMap lưu dạng chữ thường, ai đọc được cũng thấy hết:
+#        kubectl get configmap app-config -o yaml
+#    Thông tin mật -> dùng kind: Secret
+# ============================================================
+
+apiVersion: v1            # ConfigMap là object "core" (không có group) -> luôn là v1
+                          # Tra cứu: kubectl explain configmap
+kind: ConfigMap           # Loại object muốn tạo
+
+metadata:
+  name: app-config        # ⭐ TỰ ĐẶT - nhưng NHỚ KỸ tên này.
+                          # Deployment sẽ gọi lại đúng tên này ở:
+                          #   configMapKeyRef.name / configMapRef.name / volumes.configMap.name
+                          # Gọi sai tên -> Pod kẹt ở CreateContainerConfigError
+
+  namespace: default      # PHẢI CÙNG namespace với Pod dùng nó.
+                          # ConfigMap KHÔNG dùng chéo namespace được.
+                          # deployment/deployment.yaml không khai báo -> nó nằm ở "default"
+
+  labels:
+    app: nginx            # TỰ ĐẶT, chỉ để lọc cho dễ: kubectl get cm -l app=nginx
+
+# ------------------------------------------------------------
+# data: toàn bộ nội dung cấu hình. Có 2 KIỂU ghi, dùng lẫn nhau được.
+# ------------------------------------------------------------
+data:
+
+  # ===== KIỂU 1: từng cặp key = value (dùng làm BIẾN MÔI TRƯỜNG) =====
+  # Quy ước: tên biến viết HOA, có gạch dưới - giống biến môi trường thật.
+
+  APP_ENV: "production"       # môi trường đang chạy: dev / staging / production
+  LOG_LEVEL: "debug"          # mức ghi log
+  APP_PORT: "8080"            # ⚠️ PHẢI có nháy kép "".
+                              # Viết 8080 trần -> YAML hiểu là SỐ -> k8s báo lỗi,
+                              # vì mọi value trong data BẮT BUỘC là chuỗi.
+                              # Tương tự: "true", "false" cũng phải bọc nháy.
+
+  DB_HOST: "mysql-service"    # ⭐ Gọi database bằng TÊN SERVICE, KHÔNG dùng IP.
+                              # Lấy từ metadata.name của Service tương ứng.
+                              # Pod chết là IP đổi, nhưng tên Service thì không đổi.
+  DB_PORT: "3306"
+
+  # KHÔNG viết dòng như thế này:
+  #   DB_PASSWORD: "123456"   <-- SAI. Cái này thuộc về Secret.
+
+
+  # ===== KIỂU 2: nhét nguyên một FILE cấu hình (dùng làm VOLUME) =====
+  # Key = TÊN FILE sẽ xuất hiện trong container
+  # Dấu |  nghĩa là "giữ nguyên xuống dòng và thụt đầu dòng bên dưới"
+
+  nginx.conf: |
+    server {
+      listen 80;
+      server_name localhost;
+
+      location / {
+        root  /usr/share/nginx/html;
+        index index.html;
+      }
+    }
+
+  app.properties: |
+    app.name=car-serv
+    app.timeout=30
+
+# ============================================================
+# CÁCH GẮN VÀO POD - chép phần dưới vào deployment.yaml
+# (đặt trong spec.template.spec.containers)
+# ------------------------------------------------------------
+#
+# KIỂU A - lấy TỪNG biến (rõ ràng, đổi được tên biến):
+#
+#     env:
+#     - name: LOG_LEVEL              # tên biến BÊN TRONG container (tự đặt)
+#       valueFrom:
+#         configMapKeyRef:
+#           name: app-config         # <- metadata.name ở trên
+#           key: LOG_LEVEL           # <- key trong data ở trên
+#
+#
+# KIỂU B - nạp HẾT mọi key thành biến môi trường (gọn nhất, hay dùng):
+#
+#     envFrom:
+#     - configMapRef:
+#         name: app-config
+#
+#   => container sẽ có sẵn APP_ENV, LOG_LEVEL, APP_PORT, DB_HOST, DB_PORT
+#   ⚠️ nginx.conf và app.properties cũng thành biến môi trường luôn
+#      (xấu nhưng không lỗi). Muốn sạch thì tách ra 2 ConfigMap riêng:
+#      một cái cho biến, một cái cho file.
+#
+#
+# KIỂU C - biến thành FILE trong container (cho nginx.conf):
+#
+#     volumeMounts:
+#     - name: config-volume
+#       mountPath: /etc/nginx/conf.d   # thư mục file sẽ xuất hiện
+#     ...
+#     (ngang hàng với containers:)
+#     volumes:
+#     - name: config-volume            # phải trùng tên với volumeMounts.name
+#       configMap:
+#         name: app-config
+#         items:                       # (tùy chọn) chỉ lấy vài key thôi
+#         - key: nginx.conf
+#           path: default.conf         # đổi tên file khi gắn vào
+#
+#   => trong container sẽ có file /etc/nginx/conf.d/default.conf
+#   ⚠️ mountPath sẽ GHI ĐÈ toàn bộ thư mục đó trong container.
+#      Thư mục có sẵn file khác -> các file đó biến mất.
+#
+# ============================================================
+# BẢNG TÓM TẮT: giá trị nào lấy từ đâu
+# ------------------------------------------------------------
+# metadata.name   <- tự đặt, Deployment phải gọi lại ĐÚNG tên này
+# namespace       <- namespace của Pod sẽ dùng (không khai báo = default)
+# data (key)      <- tự đặt: TÊN BIẾN (viết hoa) hoặc TÊN FILE (có đuôi .conf/.yml)
+# data (value)    <- luôn là CHUỖI, nên bọc nháy kép ""
+# DB_HOST         <- metadata.name của Service database
+# ============================================================
+#
+# CÁC LỆNH ĐỂ THỰC HÀNH:
+#   kubectl apply -f configmap.yaml
+#   kubectl get cm                                  # liệt kê
+#   kubectl get cm app-config -o yaml               # xem toàn bộ nội dung
+#   kubectl describe cm app-config
+#
+# KIỂM TRA ĐÃ VÀO CONTAINER CHƯA:
+#   kubectl exec -it <ten-pod> -- env | grep LOG_LEVEL
+#   kubectl exec -it <ten-pod> -- cat /etc/nginx/conf.d/default.conf
+#
+# ⚠️ SỬA FILE NÀY XONG, POD KHÔNG TỰ CẬP NHẬT (nếu gắn kiểu env):
+#   kubectl apply -f configmap.yaml
+#   kubectl rollout restart deployment nginx-deployment   # bắt buộc
+#
+# XÓA:
+#   kubectl delete -f configmap.yaml

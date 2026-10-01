@@ -1,0 +1,317 @@
+# ============================================================
+# POSTGRESQL PRODUCTION - ví dụ triển khai hoàn chỉnh
+#
+# File này gồm 6 object, ngăn cách bằng dấu ---
+#   1. Secret            - mật khẩu database
+#   2. ConfigMap         - cấu hình công khai
+#   3. Service headless  - để các Pod TÌM NHAU (bắt buộc cho StatefulSet)
+#   4. Service ClusterIP - để APP kết nối vào database
+#   5. StatefulSet       - chạy Postgres + ổ đĩa riêng mỗi Pod
+#   6. PodDisruptionBudget - chống bị xóa hết Pod khi bảo trì Node
+#
+# ⚠️ VÌ SAO DÙNG StatefulSet MÀ KHÔNG DÙNG Deployment:
+#    Deployment -> mọi Pod dùng CHUNG 1 PVC -> 2 Postgres cùng ghi 1 ổ đĩa
+#                  -> HỎNG DỮ LIỆU KHÔNG CỨU ĐƯỢC.
+#    StatefulSet -> mỗi Pod 1 ổ đĩa RIÊNG + tên cố định.
+#
+# ⚠️ LƯU Ý THẬT LÒNG VỀ PRODUCTION:
+#    File này dạy ĐÚNG CẤU TRÚC hạ tầng, nhưng replicas: 1.
+#    StatefulSet KHÔNG tự biết cấu hình master-replica.
+#    Muốn HA thật (tự động failover, backup, replica) -> DÙNG OPERATOR:
+#        CloudNativePG (khuyên dùng), Zalando Postgres Operator, Crunchy PGO
+#    Hoặc đơn giản nhất: dùng RDS / Cloud SQL, để nhà cung cấp lo.
+# ============================================================
+
+# ============================================================
+# 1. SECRET - mật khẩu
+# ⛔ FILE NÀY CÓ PASSWORD MẪU -> production PHẢI dùng
+#    External Secrets Operator / Sealed Secrets, KHÔNG commit password thật lên git.
+# ============================================================
+apiVersion: v1
+kind: Secret
+metadata:
+  name: postgres-secret
+  namespace: default              # đổi thành namespace thật của bạn
+type: Opaque
+stringData:                       # ghi chữ thường, k8s tự mã hóa base64
+  POSTGRES_USER: "appuser"        # KHÔNG dùng user "postgres" cho app -> quá nhiều quyền
+  POSTGRES_PASSWORD: "Ch4ngeMe_InProduction!"
+  POSTGRES_DB: "appdb"
+
+  # Chuỗi kết nối để app dùng (tùy chọn, cho tiện):
+  DATABASE_URL: "postgresql://appuser:Ch4ngeMe_InProduction!@postgres:5432/appdb"
+  #                                                          ^^^^^^^^
+  #                          <- tên Service ClusterIP ở phần 4, KHÔNG dùng IP
+
+---
+# ============================================================
+# 2. CONFIGMAP - cấu hình công khai (không bí mật)
+# ============================================================
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: postgres-config
+  namespace: default
+data:
+  POSTGRES_INITDB_ARGS: "--data-checksums"
+                                  # bật kiểm tra lỗi dữ liệu ngầm (bit rot).
+                                  # CHỈ áp dụng được LÚC TẠO MỚI, sau này không bật được.
+
+  PGDATA: "/var/lib/postgresql/data/pgdata"
+                                  # ⭐⭐ BẪY LỚN NHẤT KHI CHẠY POSTGRES TRÊN K8S ⭐⭐
+                                  #
+                                  # Ổ đĩa gắn vào /var/lib/postgresql/data thường có sẵn
+                                  # thư mục "lost+found" (do định dạng ext4).
+                                  # Postgres thấy thư mục KHÔNG RỖNG -> initdb TỪ CHỐI CHẠY:
+                                  #     "directory exists but is not empty"
+                                  #
+                                  # CÁCH SỬA: trỏ PGDATA vào THƯ MỤC CON (/pgdata).
+                                  # Thiếu dòng này là Pod CrashLoopBackOff ngay từ đầu.
+
+---
+# ============================================================
+# 3. HEADLESS SERVICE - để các Pod TÌM NHAU
+# BẮT BUỘC phải có khi dùng StatefulSet.
+# ============================================================
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres-headless         # ⭐ StatefulSet.spec.serviceName PHẢI trỏ đúng tên này
+  namespace: default
+  labels:
+    app: postgres
+spec:
+  clusterIP: None                 # ⭐ Chính dòng này làm nó thành "headless".
+                                  # KHÔNG có IP ảo -> DNS trả về THẲNG IP từng Pod
+                                  # -> gọi được ĐÍCH DANH:
+                                  #      postgres-0.postgres-headless.default.svc.cluster.local
+                                  #
+                                  # Service thường chia traffic NGẪU NHIÊN
+                                  # -> không biết đang nói chuyện với master hay replica -> hỏng.
+
+  selector:
+    app: postgres                 # lấy từ StatefulSet: spec.template.metadata.labels
+
+  ports:
+    - name: postgres
+      port: 5432
+      targetPort: 5432
+
+---
+# ============================================================
+# 4. SERVICE ClusterIP - để APP kết nối vào
+# ============================================================
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres                  # app kết nối bằng tên này: postgres:5432
+  namespace: default
+  labels:
+    app: postgres
+spec:
+  type: ClusterIP                 # ⚠️ TUYỆT ĐỐI KHÔNG để NodePort/LoadBalancer cho database.
+                                  # Mở database ra internet = mời hacker vào nhà.
+                                  # Cần truy cập từ máy cá nhân -> dùng port-forward.
+  selector:
+    app: postgres
+  ports:
+    - name: postgres
+      port: 5432
+      targetPort: 5432
+
+---
+# ============================================================
+# 5. STATEFULSET - phần chính
+# ============================================================
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: postgres                  # ⭐ tên này thành TIỀN TỐ của Pod -> postgres-0
+  namespace: default
+spec:
+  serviceName: postgres-headless  # ⭐ BẮT BUỘC, trỏ tới Headless Service ở phần 3.
+                                  # Sai tên -> Pod vẫn chạy nhưng DNS đích danh KHÔNG hoạt động.
+
+  replicas: 1                     # ⚠️ ĐỂ 1 LÀ CÓ CHỦ Ý.
+                                  # Tăng lên 3 KHÔNG tự thành cụm HA -
+                                  # sẽ ra 3 database RỜI RẠC, mỗi cái dữ liệu riêng.
+                                  # Muốn HA thật -> dùng Operator (xem ghi chú đầu file).
+
+  selector:
+    matchLabels:
+      app: postgres               # phải trùng template.metadata.labels bên dưới
+
+  template:
+    metadata:
+      labels:
+        app: postgres             # ⭐ nhãn của POD - 2 Service ở trên dựa vào đây
+    spec:
+      securityContext:            # --- BẢO MẬT: không chạy bằng root ---
+        runAsUser: 999            # uid 999 = user "postgres" trong image chính thức
+        runAsGroup: 999
+        fsGroup: 999              # ⭐ QUAN TRỌNG: đặt quyền sở hữu ổ đĩa cho uid 999.
+                                  # Thiếu dòng này -> ổ đĩa thuộc về root
+                                  # -> Postgres không ghi được -> "permission denied".
+
+      terminationGracePeriodSeconds: 60
+                                  # Cho Postgres 60 giây để tắt SẠCH SẼ (flush dữ liệu ra đĩa).
+                                  # Mặc định 30s - tắt ép giữa chừng dễ hỏng dữ liệu.
+
+      containers:
+      - name: postgres
+        image: postgres:16.4      # ⭐ GIM ĐÚNG PHIÊN BẢN. KHÔNG dùng :latest cho database.
+                                  # latest tự nhảy lên major version mới -> dữ liệu không đọc được.
+
+        ports:
+        - name: postgres
+          containerPort: 5432
+
+        # --- NẠP BIẾN MÔI TRƯỜNG từ Secret + ConfigMap ---
+        envFrom:
+        - secretRef:
+            name: postgres-secret     # <- metadata.name ở phần 1
+        - configMapRef:
+            name: postgres-config     # <- metadata.name ở phần 2
+
+        # --- TÀI NGUYÊN ---
+        resources:
+          requests:               # mức TỐI THIỂU được đảm bảo
+            cpu: 250m
+            memory: 512Mi
+          limits:
+            cpu: "1"
+            memory: 2Gi           # ⚠️ Vượt RAM -> container bị GIẾT (OOMKilled) đột ngột.
+                                  # Đặt rộng tay cho database.
+                                  # ⚠️ KHÔNG nên đặt limits.cpu quá chặt cho database
+                                  # -> bị bóp chậm (throttle) làm query chậm bất thường.
+
+        # --- KIỂM TRA SỨC KHỎE - 3 loại, mỗi loại một việc ---
+        startupProbe:             # ⭐ "ĐÃ KHỞI ĐỘNG XONG CHƯA?"
+          exec:                   # Lần đầu tạo database mất khá lâu.
+            command: ["sh", "-c", "pg_isready -U $POSTGRES_USER -d $POSTGRES_DB"]
+          failureThreshold: 30    # cho tối đa 30 x 10s = 5 PHÚT để khởi động
+          periodSeconds: 10
+                                  # Thiếu probe này -> livenessProbe tưởng Pod treo
+                                  # -> giết Pod liên tục -> CrashLoopBackOff vĩnh viễn.
+
+        readinessProbe:           # ⭐ "NHẬN REQUEST ĐƯỢC CHƯA?"
+          exec:                   # Chưa sẵn sàng -> Service KHÔNG gửi traffic vào.
+            command: ["sh", "-c", "pg_isready -U $POSTGRES_USER -d $POSTGRES_DB"]
+          initialDelaySeconds: 5
+          periodSeconds: 10
+          timeoutSeconds: 5
+
+        livenessProbe:            # ⭐ "CÒN SỐNG KHÔNG?" - chết thì RESTART Pod
+          exec:
+            command: ["sh", "-c", "pg_isready -U $POSTGRES_USER -d $POSTGRES_DB"]
+          initialDelaySeconds: 30
+          periodSeconds: 20
+          timeoutSeconds: 5
+          failureThreshold: 6     # sai 6 lần liên tiếp mới giết.
+                                  # ⚠️ Đặt chặt quá -> database đang bận query nặng
+                                  # bị hiểu nhầm là chết -> restart oan.
+
+        # --- GẮN Ổ ĐĨA ---
+        volumeMounts:
+        - name: data                              # trùng tên với volumeClaimTemplates bên dưới
+          mountPath: /var/lib/postgresql/data     # nơi Postgres lưu dữ liệu
+                                                  # (nhớ PGDATA trỏ vào thư mục con /pgdata)
+
+        - name: dshm
+          mountPath: /dev/shm                     # ⭐ BỘ NHỚ CHIA SẺ.
+                                                  # k8s mặc định chỉ cho /dev/shm = 64Mi
+                                                  # -> query song song / sort lớn sẽ lỗi:
+                                                  #    "could not resize shared memory segment"
+
+      volumes:
+      - name: dshm
+        emptyDir:
+          medium: Memory          # dùng RAM làm ổ đĩa tạm
+          sizeLimit: 1Gi
+
+  # ------------------------------------------------------------
+  # ⭐ volumeClaimTemplates - KHÁC BIỆT LỚN NHẤT so với Deployment
+  # k8s TỰ tạo PVC RIÊNG cho từng Pod, tên = <name>-<tên Pod>:
+  #       data-postgres-0, data-postgres-1, ...
+  # Pod chết -> sống lại gắn ĐÚNG ổ đĩa cũ -> dữ liệu còn nguyên.
+  # ------------------------------------------------------------
+  volumeClaimTemplates:
+  - metadata:
+      name: data                  # -> PVC tên "data-postgres-0"
+    spec:
+      accessModes: [ "ReadWriteOnce" ]     # 1 Node ghi - đúng cho database
+      storageClassName: fast-ssd  # ⭐ LẤY TỪ: tên StorageClass có trong cluster
+                                  #   xem bằng: kubectl get sc
+                                  #   minikube -> "standard" | AWS -> "gp3"
+                                  #
+                                  # ⚠️ PRODUCTION: StorageClass này PHẢI có
+                                  #    reclaimPolicy: Retain
+                                  #    Để Delete mà lỡ xóa PVC là MẤT SẠCH dữ liệu.
+      resources:
+        requests:
+          storage: 20Gi           # ⚠️ Ổ đĩa NỞ RA được, KHÔNG CO LẠI được.
+                                  # (muốn nở: StorageClass phải có allowVolumeExpansion: true)
+
+---
+# ============================================================
+# 6. PODDISRUPTIONBUDGET - chống mất database khi bảo trì
+# ============================================================
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: postgres-pdb
+  namespace: default
+spec:
+  minAvailable: 1                 # LUÔN phải còn ít nhất 1 Pod sống.
+                                  # Admin gõ "kubectl drain node" để bảo trì
+                                  # -> k8s SẼ TỪ CHỐI xóa Pod nếu vi phạm điều này.
+                                  # Thiếu PDB -> database bị xóa lúc nửa đêm mà không ai biết.
+  selector:
+    matchLabels:
+      app: postgres
+
+# ============================================================
+# CÁC LỆNH ĐỂ THỰC HÀNH
+# ------------------------------------------------------------
+#   kubectl get sc                            # xem StorageClass có sẵn, SỬA lại dòng
+#                                             # storageClassName cho khớp TRƯỚC khi apply
+#   kubectl apply -f postgres-production.yaml # apply cả 6 object 1 lần
+#
+#   kubectl get sts,pods,pvc,svc              # kiểm tra tổng thể
+#   kubectl get pvc                           # thấy: data-postgres-0   Bound
+#   kubectl logs postgres-0 -f                # xem log khởi động
+#
+# KẾT NỐI VÀO DATABASE:
+#   kubectl exec -it postgres-0 -- psql -U appuser -d appdb
+#       \dt        (liệt kê bảng)
+#       \q         (thoát)
+#
+#   # truy cập từ máy cá nhân (KHÔNG mở NodePort):
+#   kubectl port-forward svc/postgres 5432:5432
+#
+# KIỂM TRA DỮ LIỆU CÓ BỀN KHÔNG - LÀM 1 LẦN CHO NHỚ:
+#   kubectl exec -it postgres-0 -- psql -U appuser -d appdb \
+#       -c "CREATE TABLE test(id int); INSERT INTO test VALUES(1);"
+#   kubectl delete pod postgres-0                       # XÓA Pod đi
+#   kubectl exec -it postgres-0 -- psql -U appuser -d appdb -c "SELECT * FROM test;"
+#   -> vẫn thấy dòng dữ liệu = ĐÚNG (Pod mới gắn lại đúng ổ đĩa cũ)
+#
+# SAO LƯU (production PHẢI có, StatefulSet KHÔNG tự backup):
+#   kubectl exec postgres-0 -- pg_dump -U appuser appdb > backup.sql
+#   -> thực tế nên chạy tự động bằng CronJob + đẩy lên S3
+#
+# ⚠️ XÓA - PVC KHÔNG TỰ MẤT (k8s cố ý bảo vệ dữ liệu):
+#   kubectl delete -f postgres-production.yaml
+#   kubectl get pvc                           # data-postgres-0 VẪN CÒN
+#   kubectl delete pvc data-postgres-0        # muốn xóa sạch thì phải gõ tay
+#
+# ============================================================
+# CHECKLIST TRƯỚC KHI DÙNG THẬT
+# ------------------------------------------------------------
+#   [ ] Đổi password, KHÔNG commit lên git (dùng External/Sealed Secrets)
+#   [ ] StorageClass đã đặt reclaimPolicy: Retain chưa?
+#   [ ] Đã có CronJob backup + đã THỬ PHỤC HỒI từ backup chưa?
+#   [ ] Đã gim đúng version image (không dùng :latest) chưa?
+#   [ ] Cần HA / tự động failover -> ĐỔI SANG OPERATOR (CloudNativePG)
+#   [ ] Có NetworkPolicy chặn Pod lạ kết nối vào database chưa?
+# ============================================================

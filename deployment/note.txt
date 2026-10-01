@@ -1,0 +1,109 @@
+Deployment = VỎ BỌC, bao lấy Pods.
+Là "người quản lý" giúp Pod luôn sống đúng số lượng và update được mà không gián đoạn.
+
+    Container -> Pod -> DEPLOYMENT -> Service -> Ingress
+                        (đang ở đây)
+
+
+1. VÌ SAO CẦN DEPLOYMENT?
+--------------------------------------------------
+Pod tạo tay có 3 điểm yếu chí mạng:
+    - Pod chết -> nằm luôn, không ai dựng lại.
+    - Muốn 5 bản -> phải viết tay 5 file YAML, 5 cái tên khác nhau.
+    - Muốn đổi version image -> phải xóa Pod cũ, tạo Pod mới -> WEB SẬP trong lúc đó.
+
+Deployment lo hết cả 3:
+    - Tự động hồi sinh: Pod chết -> tạo Pod mới ngay (self-healing)
+    - Scale 1 lệnh: kubectl scale deployment nginx-deployment --replicas=10
+    - Update không downtime: thay Pod từ từ, vừa chạy vừa đổi
+    - Rollback: lỡ deploy bản lỗi -> quay về bản cũ bằng 1 lệnh
+
+
+2. CƠ CHẾ BÊN TRONG - 3 TẦNG
+--------------------------------------------------
+    Deployment  ->  ReplicaSet  ->  Pod
+
+- Deployment : ra lệnh "tôi muốn 3 Pod chạy image nginx:1.14.2"
+- ReplicaSet : thực thi việc ĐẾM và giữ đúng 3 Pod (thiếu thì tạo, thừa thì xóa)
+- Pod        : chạy container thật
+
+Mỗi lần đổi image, Deployment tạo MỘT ReplicaSet MỚI, rồi chuyển Pod dần từ RS cũ sang RS mới.
+RS cũ được giữ lại (số Pod = 0) -> chính là thứ giúp ROLLBACK được.
+
+    Xem tận mắt:  kubectl get rs
+
+
+3. CÁC TRƯỜNG CHÍNH TRONG deployment.yaml
+--------------------------------------------------
+    apiVersion: apps/v1               # Deployment thuộc group "apps" (Pod/Service thì là v1)
+    kind: Deployment
+    metadata:
+      name: nginx-deployment          # tên Deployment
+      labels:
+        app: nginx                    # nhãn của CHÍNH Deployment (ít dùng)
+    spec:
+      replicas: 3                     # muốn bao nhiêu Pod chạy cùng lúc
+
+      selector:
+        matchLabels:
+          app: nginx                  # Deployment dựa vào nhãn này để NHẬN Pod là con mình
+                                      # BẮT BUỘC trùng với template.metadata.labels bên dưới
+                                      # Sai -> k8s báo lỗi, không tạo được
+
+      template:                       # <- KHUÔN ĐÚC POD. Toàn bộ phần này chính là 1 file Pod
+        metadata:
+          labels:
+            app: nginx                # ⭐ nhãn dán lên POD
+                                      #    -> Service lấy ĐÚNG cặp này làm selector
+        spec:
+          containers:
+          - name: nginx
+            image: nginx:1.14.2       # đổi dòng này = trigger 1 lần update
+            ports:
+            - containerPort: 80       # -> Service lấy số này làm targetPort
+
+    GHI NHỚ: có 2 chỗ ghi "app: nginx"
+        metadata.labels           -> nhãn của Deployment  (KHÔNG phải cái Service cần)
+        template.metadata.labels  -> nhãn của Pod         (CHÍNH LÀ cái Service cần)
+
+
+4. STRATEGY - CÁCH THAY POD KHI UPDATE (xem thư mục stategy/)
+--------------------------------------------------
+- RollingUpdate (MẶC ĐỊNH) -> file rolling-update.yaml
+    Thay từ từ: dựng Pod mới, Pod mới chạy OK thì mới xóa Pod cũ.
+    => KHÔNG DOWNTIME. Nhưng trong lúc update tồn tại CẢ 2 version cùng lúc.
+
+    maxSurge: 25%        - được phép dựng THÊM tối đa 25% Pod so với replicas
+                           (3 Pod -> lúc cao điểm có thể lên 4)
+    maxUnavailable: 25%  - được phép CHẾT tối đa 25% Pod tại một thời điểm
+                           (3 Pod -> luôn còn ít nhất 3 cái chạy)
+
+- Recreate -> file recreate.yaml
+    XÓA SẠCH Pod cũ rồi mới tạo Pod mới.
+    => CÓ DOWNTIME. Dùng khi 2 version không thể chạy song song
+       (vd: đổi cấu trúc database, app ghi chung 1 file lock).
+
+
+5. LƯU Ý QUAN TRỌNG
+--------------------------------------------------
+- Đừng sửa/xóa Pod bằng tay. Xóa xong Deployment lại tạo lại ngay.
+  Muốn đổi gì -> sửa file deployment.yaml rồi apply lại.
+
+- Chỉ thay đổi trong spec.template mới tạo version mới (rollout).
+  Đổi replicas KHÔNG tạo version mới, chỉ là scale.
+
+- Deployment KHÔNG mở cổng ra ngoài. Muốn truy cập được -> phải có Service.
+
+- Deployment dùng cho app STATELESS (web, API - Pod nào cũng như nhau).
+  App STATEFUL (database, kafka - cần tên và ổ đĩa cố định) -> dùng StatefulSet.
+
+
+6. GHI NHỚ NGẮN
+--------------------------------------------------
+    Pod        : chạy ứng dụng
+    Deployment : bảo đảm ứng dụng LUÔN chạy, đủ số lượng, và update an toàn
+
+    Bạn khai báo "TÔI MUỐN 3 POD" -> k8s tự xoay sở để luôn đúng 3 Pod.
+    Đó gọi là declarative: mô tả KẾT QUẢ mong muốn, không ra lệnh từng bước.
+
+(các lệnh thực hành xem trong shell.sh)

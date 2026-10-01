@@ -1,0 +1,172 @@
+# ============================================================
+# HPA (Horizontal Pod Autoscaler)
+# Tự động TĂNG/GIẢM SỐ LƯỢNG POD theo tải thực tế.
+#
+# Cách hoạt động: cứ ~15 giây, HPA hỏi Metrics Server xem Pod đang xài
+# bao nhiêu CPU, rồi SỬA số replicas của Deployment.
+#   -> HPA KHÔNG tự tạo Pod. Deployment mới là người tạo.
+#
+# ⚠️ THIẾU 1 TRONG 2 THỨ NÀY THÌ HPA NẰM IM, cột TARGETS hiện <unknown>:
+#   (1) Metrics Server đã cài chưa?   kubectl top nodes
+#       minikube: minikube addons enable metrics-server
+#   (2) Deployment đã có resources.requests chưa?  (xem cuối file)
+# ============================================================
+
+apiVersion: autoscaling/v2          # ⭐ DÙNG v2, KHÔNG dùng v1.
+                                    # v1 đã cũ, chỉ scale được theo CPU và cú pháp khác hẳn.
+                                    # Kiểm tra cluster có hỗ trợ không:
+                                    #   kubectl api-versions | grep autoscaling
+
+kind: HorizontalPodAutoscaler       # Loại object muốn tạo
+
+metadata:
+  name: nginx-hpa                   # TỰ ĐẶT. Thường lấy tên deployment + "-hpa" cho dễ nhớ.
+
+  namespace: default                # PHẢI CÙNG namespace với Deployment bị scale.
+                                    # deployment/deployment.yaml không khai báo -> "default"
+
+spec:
+  # ------------------------------------------------------------
+  # scaleTargetRef: SCALE CHO AI?
+  # ------------------------------------------------------------
+  scaleTargetRef:
+    apiVersion: apps/v1             # LẤY TỪ: dòng apiVersion của Deployment
+                                    #   deployment/deployment.yaml -> apiVersion: apps/v1
+    kind: Deployment                # Loại object bị scale (Deployment / StatefulSet / ReplicaSet)
+    name: nginx-deployment          # ⭐ LẤY TỪ: metadata.name của Deployment
+                                    #   deployment/deployment.yaml:
+                                    #       metadata:
+                                    #         name: nginx-deployment   <-- chép đúng tên này
+                                    #
+                                    # Sai tên -> HPA không báo lỗi lúc apply,
+                                    # nhưng describe sẽ hiện: "failed to get scale target"
+
+  # ------------------------------------------------------------
+  # Giới hạn số Pod
+  # ------------------------------------------------------------
+  minReplicas: 2                    # Ít nhất LUÔN giữ 2 Pod, kể cả lúc không có khách.
+                                    # Production nên >= 2 để 1 Pod chết vẫn còn cái chạy.
+                                    # Học/tiết kiệm thì để 1.
+
+  maxReplicas: 10                   # Nhiều nhất 10 Pod. Đây là PHANH AN TOÀN:
+                                    # app bị lỗi vòng lặp -> CPU tăng vô hạn
+                                    # -> không có trần này thì Pod đẻ đến khi cháy túi tiền.
+
+  # ------------------------------------------------------------
+  # metrics: DỰA VÀO ĐÂU ĐỂ SCALE?
+  # ------------------------------------------------------------
+  metrics:
+  - type: Resource                  # Resource = CPU/RAM (chỉ cần Metrics Server)
+                                    # Các type khác: Pods / Object / External
+                                    #   -> cần cài thêm Prometheus Adapter hoặc KEDA
+    resource:
+      name: cpu                     # Scale theo CPU - phổ biến nhất, an toàn nhất
+      target:
+        type: Utilization           # Utilization = tính theo % so với resources.requests
+                                    # (còn AverageValue = tính theo số tuyệt đối, vd 500m)
+        averageUtilization: 70      # ⭐ MỤC TIÊU: giữ CPU trung bình quanh 70%
+                                    #
+                                    # HIỂU CON SỐ NÀY:
+                                    #   Deployment khai requests.cpu = 100m
+                                    #   -> HPA cố giữ mỗi Pod dùng quanh 70m
+                                    #
+                                    # CÔNG THỨC HPA TÍNH:
+                                    #   Pod mới = Pod hiện tại x (thực tế / mục tiêu)
+                                    #   VD: 3 Pod, CPU 90%, mục tiêu 70%
+                                    #       -> 3 x (90/70) = 3.85 -> làm tròn LÊN = 4 Pod
+                                    #
+                                    # ĐẶT BAO NHIÊU:
+                                    #   50-70% : an toàn, còn dư chỗ cho tải tăng đột ngột
+                                    #   80-90% : tiết kiệm tiền nhưng phản ứng chậm, dễ nghẽn
+                                    #   Đừng để 100% -> lúc HPA kịp thêm Pod thì đã nghẽn rồi.
+
+  # --- (tùy chọn) scale thêm theo RAM: bỏ comment khối dưới ---
+  # - type: Resource
+  #   resource:
+  #     name: memory
+  #     target:
+  #       type: Utilization
+  #       averageUtilization: 80
+  #
+  # ⚠️ Nhiều metric cùng lúc -> HPA tính riêng từng cái rồi LẤY SỐ POD LỚN NHẤT.
+  # ⚠️ Cẩn thận scale theo memory: app Java/Node giữ RAM không trả lại
+  #    -> Pod chỉ tăng mà không bao giờ giảm.
+
+  # ------------------------------------------------------------
+  # behavior: (tùy chọn) chỉnh tốc độ tăng/giảm
+  # Bỏ khối này đi thì k8s dùng mặc định, vẫn chạy tốt.
+  # ------------------------------------------------------------
+  behavior:
+    scaleUp:                        # TĂNG Pod - ưu tiên NHANH, vì chậm là web sập
+      stabilizationWindowSeconds: 0 # 0 = phản ứng ngay lập tức (mặc định)
+      policies:
+      - type: Percent
+        value: 100                  # cho phép GẤP ĐÔI số Pod
+        periodSeconds: 15           # trong mỗi 15 giây
+
+    scaleDown:                      # GIẢM Pod - cố tình CHẬM
+      stabilizationWindowSeconds: 300  # ⭐ chờ 300s (5 phút) ổn định mới dám bớt.
+                                       # Đây là MẶC ĐỊNH của k8s.
+                                       # VÌ SAO CHẬM: tải nhấp nháy mà giảm ngay
+                                       # -> Pod tạo rồi xóa liên tục (thrashing).
+                                       #
+                                       # => Test HPA thấy Pod không giảm ngay
+                                       #    thì ĐỪNG TƯỞNG LỖI. Chờ đủ 5 phút.
+      policies:
+      - type: Percent
+        value: 50                   # mỗi lần chỉ bớt tối đa 50% số Pod
+        periodSeconds: 60
+
+# ============================================================
+# ⚠️ BẮT BUỘC: THÊM resources VÀO deployment.yaml
+# Không có requests -> HPA không có mẫu số để tính % -> TARGETS = <unknown>
+# ------------------------------------------------------------
+# Chép vào deployment/deployment.yaml, trong spec.template.spec.containers:
+#
+#     containers:
+#     - name: nginx
+#       image: nginx:1.14.2
+#       ports:
+#       - containerPort: 80
+#       resources:                  # <-- THÊM KHỐI NÀY
+#         requests:                 # ⭐ mức TỐI THIỂU xin cấp - HPA tính % dựa vào đây
+#           cpu: 100m               # 100m = 0.1 CPU (m = milli = 1/1000 core)
+#           memory: 128Mi
+#         limits:                   # mức TRẦN
+#           cpu: 500m               # vượt CPU -> bị bóp chậm lại (throttle)
+#           memory: 256Mi           # vượt RAM -> container bị GIẾT (OOMKilled)
+#
+# ⚠️ ĐÃ CÓ HPA THÌ BỎ dòng "replicas: 3" trong deployment.yaml.
+#    Để lại -> mỗi lần apply deployment sẽ ĐÁNH NHAU với HPA, Pod nhảy loạn lên xuống.
+#
+# ============================================================
+# BẢNG TÓM TẮT: giá trị nào lấy từ đâu
+# ------------------------------------------------------------
+# scaleTargetRef.name       <- deployment.yaml: metadata.name
+# scaleTargetRef.apiVersion <- deployment.yaml: apiVersion (apps/v1)
+# namespace                 <- namespace của Deployment (không khai báo = default)
+# averageUtilization        <- tự chọn, thường 50-70%
+# min/maxReplicas           <- tự chọn (min >= 2 cho production)
+# ============================================================
+#
+# CÁC LỆNH ĐỂ THỰC HÀNH:
+#   kubectl top nodes                        # kiểm tra Metrics Server TRƯỚC
+#   kubectl apply -f ../deployment/deployment.yaml
+#   kubectl apply -f hpa.yaml
+#
+#   kubectl get hpa                          # xem nhanh
+#   kubectl get hpa -w                       # theo dõi LIÊN TỤC - dùng khi test
+#   kubectl describe hpa nginx-hpa           # xem LÝ DO vì sao tăng/giảm
+#
+# ĐỌC CỘT TARGETS của kubectl get hpa:
+#   cpu: 45%/70%          -> đang 45%, mục tiêu 70% -> ổn, không scale
+#   cpu: <unknown>/70%    -> LỖI: thiếu Metrics Server HOẶC thiếu resources.requests
+#
+# TẠO TẢI GIẢ ĐỂ THỬ (mở terminal thứ 2, chạy song song với get hpa -w):
+#   kubectl run load --rm -it --image=busybox -- /bin/sh
+#   # rồi gõ bên trong:
+#   while true; do wget -q -O- http://nginx-service; done
+#   # Ctrl+C để dừng, rồi chờ 5 phút xem Pod tự giảm
+#
+# XÓA:
+#   kubectl delete -f hpa.yaml

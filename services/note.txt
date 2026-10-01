@@ -1,0 +1,16 @@
+Service điều phối traffics vào đúng các pods
+
+- ClusterIP
+    - Trong Kubernetes (K8s) là một địa chỉ IP ảo cố định dùng để giao tiếp nội bộ giữa các ứng dụng bên trong cùng một cluster. 
+    Đây cũng là loại Service mặc định khi tạo một Service mới trong Kubernetes.
+
+- NodePort
+    - Mở trực tiếp một port từ pod ra bên ngoài
+    - Chỉ dùng được port từ 30000 - 32676
+
+- Loadbalancer
+    - Dành cho cloud providers, điều phối traffics đến các service tương ứng
+
+- ExternalName
+    - Liên kết với một tên miền ở bên ngoài ( domain )
+    

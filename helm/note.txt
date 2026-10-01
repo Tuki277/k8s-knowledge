@@ -1,0 +1,165 @@
+Helm = "trình quản lý gói" (package manager) cho Kubernetes.
+Giống apt của Ubuntu, npm của Node, composer của PHP... nhưng dành cho k8s.
+
+Ví von dễ nhớ:
+    Chart   = công thức nấu ăn  (bộ template YAML đóng gói sẵn)
+    Values  = nguyên liệu       (tham số truyền vào: version, replicas, domain...)
+    Release = món ăn đã nấu     (một lần cài chart đó vào cluster)
+
+
+1. VÌ SAO CẦN HELM?
+--------------------------------------------------
+Khi chưa có Helm, deploy 1 app phải viết tay và apply cả đống file:
+    deployment.yaml, service.yaml, ingress.yaml, configmap.yaml, secret.yaml, hpa.yaml...
+
+Vấn đề phát sinh:
+    - Deploy cùng 1 app cho dev / staging / prod -> phải copy 3 bộ file, sửa tay từng chỗ
+      (khác image tag, khác replicas, khác domain) -> rất dễ sai sót.
+    - Muốn cài Redis / Nginx / Prometheus -> phải tự tìm và viết hàng trăm dòng YAML.
+    - Muốn quay lại phiên bản cũ khi deploy lỗi -> phải nhớ chính xác file cũ trông ra sao.
+
+Helm giải quyết:
+    - Viết YAML MỘT LẦN dưới dạng template, chỗ nào thay đổi thì để biến.
+    - Đổi môi trường chỉ cần đổi file values.
+    - Cài app có sẵn bằng 1 lệnh duy nhất.
+    - Nâng cấp / quay lui (rollback) bằng 1 lệnh, có lưu lịch sử.
+
+
+2. BA KHÁI NIỆM CỐT LÕI
+--------------------------------------------------
+- Chart      : gói chứa các template YAML + giá trị mặc định. Là thứ ta "cài".
+- Values     : bộ tham số để điền vào template. Mặc định nằm trong values.yaml,
+               có thể ghi đè bằng file khác hoặc bằng cờ --set.
+- Release    : một lần cài chart vào cluster, có TÊN riêng.
+               Cùng 1 chart cài 3 lần với 3 tên -> 3 release độc lập nhau.
+               VD: helm install web-dev ./mychart
+                   helm install web-prod ./mychart
+
+- Repository : kho chứa chart trên mạng để tải về (giống repo của apt).
+               VD: bitnami, ingress-nginx, prometheus-community.
+
+
+3. CẤU TRÚC MỘT CHART
+--------------------------------------------------
+    mychart/
+      Chart.yaml          # thông tin chart: tên, version, mô tả
+      values.yaml         # GIÁ TRỊ MẶC ĐỊNH - chỗ sửa nhiều nhất
+      templates/          # các file YAML có chèn biến
+          deployment.yaml
+          service.yaml
+          ingress.yaml
+          _helpers.tpl    # file khai báo hàm/tên dùng lại (bắt đầu bằng _ nên không tạo object)
+      charts/             # các chart con mà chart này phụ thuộc
+      .helmignore         # file bỏ qua khi đóng gói
+
+Tạo nhanh bộ khung mẫu:
+    helm create mychart
+
+
+4. TEMPLATE HOẠT ĐỘNG THẾ NÀO
+--------------------------------------------------
+Trong templates/ dùng cú pháp {{ }} để chèn giá trị.
+
+values.yaml:
+    replicaCount: 3
+    image:
+      repository: nginx
+      tag: "1.25"
+
+templates/deployment.yaml:
+    spec:
+      replicas: {{ .Values.replicaCount }}
+      ...
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+
+Các biến dựng sẵn hay gặp:
+    .Values        -> lấy từ values.yaml (và các file --values / --set)
+    .Release.Name  -> tên release đang cài
+    .Chart.Name    -> tên chart
+    .Chart.Version -> version chart
+
+=> Helm "render" (dịch) template + values thành YAML thật, rồi mới gửi cho k8s.
+
+
+5. LUỒNG LÀM VIỆC THỰC TẾ
+--------------------------------------------------
+Cài app có sẵn từ repo cộng đồng:
+    helm repo add bitnami https://charts.bitnami.com/bitnami
+    helm repo update
+    helm search repo redis
+    helm install my-redis bitnami/redis
+
+Deploy app của mình cho nhiều môi trường:
+    helm install web-dev  ./mychart -f values-dev.yaml
+    helm install web-prod ./mychart -f values-prod.yaml
+
+    (values-prod.yaml chỉ cần ghi những dòng KHÁC mặc định, không phải chép lại hết)
+
+Đổi nhanh 1 giá trị mà không sửa file:
+    helm install web ./mychart --set replicaCount=5 --set image.tag=1.26
+
+Nâng cấp khi có phiên bản mới:
+    helm upgrade web ./mychart --set image.tag=2.0
+
+Deploy lỗi -> quay lui:
+    helm history web          # xem các bản đã deploy (REVISION 1, 2, 3...)
+    helm rollback web 1       # về lại revision 1
+
+
+6. LỆNH HAY DÙNG
+--------------------------------------------------
+    helm repo add <ten> <url>          # thêm kho chart
+    helm repo update                   # cập nhật danh sách chart
+    helm search repo <tu-khoa>         # tìm chart trong repo đã thêm
+
+    helm create <ten>                  # tạo chart mẫu
+    helm lint ./mychart                # kiểm tra chart có lỗi cú pháp không
+    helm template ./mychart            # XEM YAML sau khi render, KHÔNG cài (rất hay dùng để debug)
+
+    helm install <release> <chart>     # cài mới
+    helm install <release> <chart> --dry-run --debug   # thử trước, không cài thật
+    helm upgrade <release> <chart>     # nâng cấp
+    helm upgrade --install <release> <chart>   # chưa có thì cài, có rồi thì nâng cấp (dùng trong CI/CD)
+
+    helm list                          # danh sách release trong namespace hiện tại
+    helm list -A                       # tất cả namespace
+    helm status <release>              # trạng thái release
+    helm get values <release>          # xem values đang dùng thật sự
+    helm history <release>             # lịch sử các lần deploy
+    helm rollback <release> <revision> # quay lui
+    helm uninstall <release>           # gỡ, xoá toàn bộ object của release đó
+
+
+7. LƯU Ý / DỄ NHẦM
+--------------------------------------------------
+- Helm KHÔNG thay thế YAML. Nó chỉ sinh ra YAML rồi đưa cho k8s. Vẫn phải hiểu
+  Pod / Deployment / Service / Ingress thì mới viết được chart.
+
+- Thứ tự ưu tiên của values (cái sau ghi đè cái trước):
+      values.yaml trong chart  ->  file -f truyền vào  ->  cờ --set
+
+- Nhiều file -f thì file đứng SAU thắng.
+
+- Helm 3 KHÔNG còn Tiller (server chạy trong cluster như Helm 2 nữa).
+  Helm 3 nói thẳng với API server, lưu thông tin release trong Secret của namespace.
+  => Đọc tài liệu cũ thấy nhắc "helm init", "Tiller" thì đó là Helm 2, bỏ qua.
+
+- Release gắn với NAMESPACE. Cùng tên release ở 2 namespace khác nhau là 2 cái khác nhau.
+      helm install web ./mychart -n dev --create-namespace
+
+- Sửa object bằng kubectl edit sau khi cài bằng Helm -> lần helm upgrade sau sẽ bị ghi đè.
+  Muốn sửa gì thì sửa trong values rồi upgrade.
+
+- Trước khi install thật, nên chạy:
+      helm template ./mychart          hoặc      helm install ... --dry-run --debug
+  để xem YAML cuối cùng có đúng ý không.
+
+
+8. GHI NHỚ NGẮN
+--------------------------------------------------
+    kubectl apply -f  : deploy thủ công, từng file, cố định
+    helm install      : deploy cả bộ, có tham số, có version, có rollback
+
+    Chart   = khuôn
+    Values  = số liệu đổ vào khuôn
+    Release = sản phẩm chạy thật trong cluster

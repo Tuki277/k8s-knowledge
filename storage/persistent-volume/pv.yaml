@@ -1,0 +1,109 @@
+# ============================================================
+# PV (PersistentVolume) = Ổ ĐĨA THẬT trong cluster
+#
+# Ví von thuê nhà:  PV = CĂN NHÀ CỤ THỂ đã xây xong (căn 302, 50m2)
+#
+# AI VIẾT FILE NÀY: admin hạ tầng. Dev thường KHÔNG cần đụng tới.
+#
+# ⚠️ FILE NÀY LÀ CÁCH "STATIC" (tạo tay).
+#    Thực tế ngày nay hay dùng DYNAMIC: chỉ viết PVC, để StorageClass
+#    tự đẻ ra PV. Học cái này để HIỂU BẢN CHẤT bên dưới.
+#
+# ⚠️ PV KHÔNG thuộc namespace nào - nó là tài nguyên TOÀN CLUSTER.
+#    (nên trong metadata KHÔNG có dòng namespace)
+# ============================================================
+
+apiVersion: v1                  # PV là object "core" -> v1
+kind: PersistentVolume
+
+metadata:
+  name: my-pv                   # ⭐ TỰ ĐẶT. Tên này là DUY NHẤT trong cả cluster.
+                                # PVC KHÔNG gọi tên này (khác với ConfigMap/Secret).
+                                # k8s tự ghép PV <-> PVC dựa trên dung lượng + accessModes
+                                # + storageClassName, KHÔNG dựa vào tên.
+
+  labels:
+    type: local                 # TỰ ĐẶT. Dùng khi muốn PVC chọn ĐÚNG PV này
+                                # qua selector (xem pvc.yaml).
+
+spec:
+  capacity:
+    storage: 1Gi                # ⭐ DUNG LƯỢNG ổ đĩa này có.
+                                # PVC xin <= 1Gi thì ghép được. Xin 5Gi -> PVC kẹt Pending.
+                                # Đơn vị: Ki, Mi, Gi, Ti (1Gi = 1024Mi)
+
+  accessModes:
+    - ReadWriteOnce             # ⭐ AI ĐƯỢC GHI:
+                                #   ReadWriteOnce (RWO) - 1 NODE gắn và ghi  <- phổ biến nhất
+                                #                         AWS EBS / Google Disk chỉ làm được kiểu này
+                                #                         Dùng cho: database
+                                #   ReadOnlyMany  (ROX) - nhiều Node đọc, không ai ghi
+                                #   ReadWriteMany (RWX) - NHIỀU Node cùng ghi
+                                #                         cần NFS / CephFS / AWS EFS
+                                #
+                                # PVC phải xin ĐÚNG mode PV có, nếu không sẽ không ghép được.
+
+  persistentVolumeReclaimPolicy: Retain
+                                # ⭐ XÓA PVC RỒI THÌ DỮ LIỆU RA SAO:
+                                #   Retain - GIỮ dữ liệu, PV chuyển sang Released,
+                                #            admin phải xử lý tay mới dùng lại được.
+                                #            -> PRODUCTION PHẢI DÙNG CÁI NÀY cho database.
+                                #   Delete - XÓA LUÔN ổ đĩa + dữ liệu.
+                                #            (mặc định khi dynamic provisioning)
+                                #   Recycle - đã bỏ, đừng dùng.
+
+  storageClassName: manual      # ⭐ "LOẠI" ổ đĩa - dùng làm NHÃN GHÉP ĐÔI với PVC.
+                                # PVC phải ghi ĐÚNG chuỗi "manual" này thì mới ghép được.
+                                # Đặt "manual" là quy ước cho PV tạo tay
+                                # (để k8s không dùng StorageClass mặc định).
+
+  # --- NGUỒN Ổ ĐĨA THẬT NẰM Ở ĐÂU - chọn 1 trong các kiểu dưới ---
+
+  hostPath:                     # ⚠️ MƯỢN thư mục của chính máy Node.
+    path: /mnt/data             # CHỈ DÙNG KHI HỌC / chạy 1 Node (minikube, kind).
+    type: DirectoryOrCreate     # chưa có thư mục thì tự tạo
+                                #
+                                # VÌ SAO KHÔNG DÙNG THẬT ĐƯỢC:
+                                #   Cluster nhiều Node, Pod chuyển sang Node khác
+                                #   -> dữ liệu nằm lại Node cũ -> MẤT.
+
+  # --- Thực tế sẽ thay hostPath bằng 1 trong các kiểu sau ---
+  #
+  # NFS (ổ đĩa mạng, hỗ trợ RWX - nhiều Pod cùng ghi):
+  #   nfs:
+  #     server: 192.168.1.100
+  #     path: /exports/data
+  #
+  # AWS EBS (qua CSI driver):
+  #   csi:
+  #     driver: ebs.csi.aws.com
+  #     volumeHandle: vol-0123456789abcdef
+  #     fsType: ext4
+
+# ============================================================
+# BẢNG TÓM TẮT: giá trị nào lấy từ đâu
+# ------------------------------------------------------------
+# name              <- tự đặt (PVC KHÔNG gọi tên này)
+# capacity          <- dung lượng ổ đĩa thật có
+# accessModes       <- khả năng của loại ổ đĩa (EBS chỉ RWO, NFS mới RWX)
+# storageClassName  <- tự đặt, nhưng PVC PHẢI ghi TRÙNG chuỗi này
+# hostPath.path     <- đường dẫn thật trên máy Node
+# ============================================================
+#
+# CÁCH GHÉP ĐÔI: k8s ghép PV <-> PVC khi ĐỦ CẢ 3 ĐIỀU KIỆN
+#   1. storageClassName  TRÙNG NHAU
+#   2. PV.capacity       >= PVC.requests.storage
+#   3. accessModes       PV có mode mà PVC xin
+#
+# CÁC LỆNH ĐỂ THỰC HÀNH:
+#   kubectl apply -f pv.yaml
+#   kubectl get pv                        # xem STATUS + CLAIM
+#   kubectl describe pv my-pv
+#
+# ĐỌC CỘT STATUS:
+#   Available -> đang rảnh, chưa PVC nào thuê
+#   Bound     -> ĐÃ ghép với PVC -> ĐÚNG, dùng được
+#   Released  -> PVC bị xóa rồi, dữ liệu còn, CHƯA dùng lại được ngay
+#
+# XÓA:
+#   kubectl delete -f pv.yaml             # phải xóa PVC trước

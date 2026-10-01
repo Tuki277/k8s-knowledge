@@ -1,0 +1,71 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  labels:
+    app: car-serv
+  name: car-serv-deployment
+  namespace: car-serv
+spec:
+  replicas: 2
+  revisionHistoryLimit: 11
+  selector:
+    matchLabels:
+      app: car-serv
+  strategy:
+    rollingUpdate:
+      maxSurge: 25%
+      maxUnavailable: 25%
+    type: RollingUpdate
+  template:
+    metadata:
+      labels:
+        app: car-serv
+      namespace: car-serv
+    spec:
+      containers:
+        - image: elroydevops/car-serv
+          imagePullPolicy: Always
+          name: car-serv
+          ports:
+            - containerPort: 80
+              name: tcp
+              protocol: TCP
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: car-serv-service
+  namespace: car-serv
+spec:
+  internalTrafficPolicy: Cluster
+  ipFamilies:
+    - IPv4
+  ipFamilyPolicy: SingleStack
+  ports:
+    - name: tcp
+      port: 80
+      protocol: TCP
+      targetPort: 80
+  selector:
+    app: car-serv
+  sessionAffinity: None
+  type: ClusterIP
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: car-serv-ingress
+  namespace: car-serv
+spec:
+  ingressClassName: nginx
+  rules:
+    - host: car-serv-onpre.devopsedu.vn
+      http:
+        paths:
+          - backend:
+              service:
+                name: car-serv-service
+                port:
+                  number: 80
+            path: /
+            pathType: Prefix

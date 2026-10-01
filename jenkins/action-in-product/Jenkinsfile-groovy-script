@@ -1,0 +1,91 @@
+appUser = "shoeshop"
+appName = "shoe-ShoppingCart"
+appVersion = "0.0.1-SNAPSHOT"
+appType = "jar"
+processName = "${appName}-${appVersion}.${appType}"
+folderDeploy = "/datas/${appUser}/run"
+folderBackup = "/datas/${appUser}/backups"
+folderMain = "/datas/${appUser}"
+buildScript = "mvn clean install -DskipTests=true"
+copyScript = "sudo cp target/${processName} ${folderDeploy}"
+permsScript = "sudo chown -R ${appUser}. ${folderDeploy}"
+runScript = "sudo su ${appUser} -c 'cd ${folderDeploy}; java -jar ${processName} > nohup.out 2>&1 &'"
+gitLink = "http://git.elroydevops.tech/shoeshop/shoeshop.git"
+
+def getProcessId(processName) {
+    def processId = sh(returnStdout:true, script: """ ps -ef| grep ${processName}| grep -v grep| awk \'{print \$2}\' """, label: "get processId")
+}
+
+def startProcess() {
+    stage('start') {
+        sh(script: """ ${runScript} """, label: "run the project")
+        sleep 5
+        def processId = getProcessId("${processName}")
+        if ("${processId}" == "")
+            error("Cannot start process")
+    }
+    echo("${appName} with server " + params.server + " started")
+}
+
+def stopProcess() {
+    stage('stop') {
+        def processId = getProcessId("${processName}")
+        if ("${processId}" != "")
+            sh(script: """ sudo kill -9 ${processId} """, label: "kill process")
+        echo("${appName} with server " + params.server + " stopped")
+    }
+}
+
+def upcodeProcess() {
+    stage('checkout') {
+        if (params.hash == "")
+            error("require hashing for code update.")
+        checkout([$class: 'GitSCM', branches: [[ name: params.hash ]],
+            userRemoteConfigs: [[ credentialsId: 'jenkins-gitlab-user-account', url: gitLink ]]])
+    }
+    stage('build') {
+        sh(script: """ ${buildScript} """, label: "build with maven")
+    }
+    stage('config') {
+        sh(script: """ ${copyScript} """, label: "copy .jar file into the deploy folder")
+        sh(script: """ ${permsScript} """, label: "assign project permissions")
+    }
+}
+
+def backupProcess() {
+    stage('backup') {
+        // shoe-ShoppingCart_03022024_1011.zip
+        def timeStamp = new Date().format("ddMMyyyy_HHmm")
+        def zipFileName = "${appName}_${timeStamp}" + ".zip"
+        sh(script: """ sudo su ${appUser} -c "cd ${folderMain};zip -jr ${folderBackup}/${zipFileName} ${folderDeploy}"  """, label: "backup old version")
+    }
+}
+
+def rollbackProcess() {
+    stage('rollback') {
+        sh(script: """ sudo su ${appUser} -c "cd ${folderDeploy};rm -rf *"  """, label: "delete the current version")
+        sh(script: """ sudo su ${appUser} -c "cd ${folderBackup};unzip ${params.rollback_version} -d ${folderDeploy}" """, label: "rollback process")
+    }
+}
+
+node(params.server) {
+    currentBuild.displayName = params.action
+    if (params.action == "start") {
+        startProcess()
+    }
+    if (params.action == "stop") {
+        stopProcess()
+    }
+    if (params.action == "upcode") {
+        currentBuild.description = "server " + params.server + " with hash " + params.hash
+        backupProcess()
+        stopProcess()
+        upcodeProcess()
+        startProcess()
+    }
+    if (params.action == "rollback") {
+        stopProcess()
+        rollbackProcess()
+        startProcess()
+    }
+}

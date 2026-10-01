@@ -1,0 +1,15 @@
+prometheus:
+  prometheusSpec:
+    storageSpec:
+      volumeClaimTemplate:
+        spec:
+          storageClassName: hostpath
+          accessModes: ["ReadWriteOnce"]
+          resources:
+            requests:
+              storage: 10Gi
+
+prometheus-node-exporter:
+  hostRootFsMount:
+    enabled: true
+    mountPropagation: None
