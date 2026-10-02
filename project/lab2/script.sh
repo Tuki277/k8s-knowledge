@@ -83,3 +83,32 @@ kubectl run redis-client --rm --tty -i --restart='Never' \
   --command -- redis-cli -h redis-master -a $REDIS_PASSWORD
 
 kubectl port-forward --namespace redis svc/redis-master 6379:6379
+
+helm repo add argo https://argoproj.github.io/argo-helm
+helm repo update
+
+helm install argocd argo/argo-cd \
+  --namespace argocd \
+  --create-namespace
+
+kubectl get pods -n argocd -w
+
+kubectl -n argocd get secret argocd-initial-admin-secret \
+  -o jsonpath="{.data.password}" | base64 -d
+echo
+
+kubectl port-forward svc/argocd-server -n argocd 8080:443
+
+helm repo add signoz https://charts.signoz.io
+helm repo update
+
+kubectl get storageclass
+
+helm install signoz signoz/signoz \
+  --namespace signoz \
+  --create-namespace \
+  --wait \
+  --timeout 1h \
+  -f signoz-values.yaml
+
+kubectl port-forward -n signoz svc/signoz 8080:8080
