@@ -112,3 +112,21 @@ helm install signoz signoz/signoz \
   -f signoz-values.yaml
 
 kubectl port-forward -n signoz svc/signoz 8080:8080
+
+kubectl apply -f tunnel.yaml
+
+# update để có thể route domain bằng cloudflare tunnel
+
+helm upgrade jenkins jenkins/jenkins -n jenkins --set controller.jenkinsUriPrefix="/jenkins" --reuse-values
+
+export KUBE_EDITOR="nano"
+
+helm upgrade argocd argo/argo-cd -n argocd \
+  --set server.insecure=true \
+  --reuse-values
+
+kubectl patch configmap argocd-cmd-params-cm -n argocd \
+  --type merge \
+  -p '{"data":{"server.insecure":"true"}}'
+
+kubectl get pods -n argocd -w
