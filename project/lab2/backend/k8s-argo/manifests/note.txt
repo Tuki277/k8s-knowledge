@@ -1,0 +1,3 @@
+Nếu có file kustomization.yaml thì sẽ chạy file này
+Nếu không có file này, thì sẽ chạy tất cả các file có trong manifests vì trong phần path trong application.yaml
+thì trỏ vào folder manifests

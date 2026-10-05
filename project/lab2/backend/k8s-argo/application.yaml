@@ -1,0 +1,20 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: backend
+  namespace: argocd
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/Tuki277/k8s-knowledge.git
+    targetRevision: master
+    path: project/lab2/backend/k8s-argo/manifests
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: lab2
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true

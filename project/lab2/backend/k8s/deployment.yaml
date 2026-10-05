@@ -17,12 +17,38 @@ spec:
       containers:
         - name: backend
           image: backend:latest
-          imagePullPolicy: Never
+          imagePullPolicy: Always
           ports:
             - containerPort: 3000
           envFrom:
             - secretRef:
                 name: backend-secret
+          env:
+            # Gửi metrics + logs về SigNoz (OTLP/HTTP)
+            - name: OTEL_SERVICE_NAME
+              value: "todo-backend"
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: "http://signoz-otel-collector.signoz.svc.cluster.local:4318"
+            - name: OTEL_METRIC_EXPORT_INTERVAL
+              value: "15000"
+            - name: OTEL_TRACES_EXPORTER
+              value: "none"
+            - name: LOG_LEVEL
+              value: "info"
+            - name: K8S_POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: K8S_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+            - name: K8S_NODE_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.nodeName
+            - name: OTEL_RESOURCE_ATTRIBUTES
+              value: "deployment.environment=lab,k8s.cluster.name=docker-desktop-lab,k8s.pod.name=$(K8S_POD_NAME),k8s.namespace.name=$(K8S_NAMESPACE),k8s.node.name=$(K8S_NODE_NAME),k8s.deployment.name=backend-deployment"
           resources:
             limits:
               memory: "256Mi"
@@ -30,13 +56,13 @@ spec:
             requests:
               memory: "128Mi"
               cpu: "250m"
-          readinessProbe:
+          readinessProbe: # Pod có sẵn sàng nhận traffic?
             httpGet:
               path: /api/todos
               port: 3000
             initialDelaySeconds: 5
             periodSeconds: 10
-          livenessProbe:
+          livenessProbe: # Pod còn sống không?
             httpGet:
               path: /api/todos
               port: 3000

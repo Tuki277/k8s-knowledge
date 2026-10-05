@@ -1,5 +1,5 @@
 # Use Node.js LTS Alpine image for smaller size
-FROM node:20-alpine
+FROM node:24-alpine
 
 WORKDIR /app
 
@@ -17,4 +17,4 @@ USER nodejs
 
 EXPOSE 3000
 
-CMD ["node", "server.js"]
+CMD ["node", "--require", "./instrumentation.js", "server.js"]

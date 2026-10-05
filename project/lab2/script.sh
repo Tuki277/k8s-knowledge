@@ -130,3 +130,48 @@ kubectl patch configmap argocd-cmd-params-cm -n argocd \
   -p '{"data":{"server.insecure":"true"}}'
 
 kubectl get pods -n argocd -w
+
+kubectl exec -it -n postgresql postgresql-0 -- bash
+
+PGPASSWORD=<pg-password> psql -U postgres -c "CREATE DATABASE lab2;"
+
+PGPASSWORD=<pg-password> psql -U postgres -c "GRANT ALL PRIVILEGES ON DATABASE lab2 TO postgres;"
+
+kubectl logs jenkins-0 -n jenkins -c init
+
+helm repo add signoz https://charts.signoz.io
+helm repo update
+
+helm install k8s-infra signoz/k8s-infra \
+  --namespace signoz \
+  -f k8s-infra-values.yaml
+
+kubectl get pods -n signoz -l app.kubernetes.io/name=k8s-infra
+kubectl logs -n signoz -l app.kubernetes.io/component=otel-agent --tail=50
+
+kubectl patch daemonset k8s-infra-otel-agent -n signoz --type='json' -p='[
+  {"op": "remove", "path": "/spec/template/spec/containers/0/volumeMounts/3/mountPropagation"}
+]'
+
+helm upgrade k8s-infra signoz/k8s-infra -n signoz -f k8s-infra-values.yaml --reuse-values
+
+# Vào pod backend
+kubectl exec -it -n lab2 deployment/backend-deployment -- sh
+
+# Test DNS resolution
+nslookup signoz-otel-collector.signoz.svc.cluster.local
+
+# Test kết nối TCP đến port 4318
+nc -zv signoz-otel-collector.signoz.svc.cluster.local 4318
+
+# 1. Xem log crash
+kubectl logs -n lab2 -l app=backend --previous --tail=100
+
+# 2. Kiểm tra biến môi trường đã inject đúng chưa
+kubectl exec -it -n lab2 deployment/backend-deployment -- env | sort
+
+# 3. Test kết nối DB từ pod backend (nếu pod còn sống đủ lâu)
+kubectl exec -it -n lab2 deployment/backend-deployment -- sh -c "nc -zv postgresql.postgresql.svc.cluster.local 5432"
+
+# 4. Test kết nối Redis
+kubectl exec -it -n lab2 deployment/backend-deployment -- sh -c "nc -zv redis-master.redis.svc.cluster.local 6379"

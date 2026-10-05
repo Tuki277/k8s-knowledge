@@ -3,8 +3,20 @@ const express = require('express');
 const cors = require('cors');
 const { Pool } = require('pg');
 const { createClient } = require('redis');
+const { metrics } = require('@opentelemetry/api');
+const { logger, httpLogger } = require('./logger');
+
+// Custom business metrics (gửi về SigNoz qua instrumentation.js)
+const meter = metrics.getMeter('todo-backend');
+const todoOperations = meter.createCounter('todo.operations', {
+  description: 'Number of todo operations'
+});
+const cacheRequests = meter.createCounter('todo.cache.requests', {
+  description: 'Number of todo cache lookups'
+});
 
 const app = express();
+app.use(httpLogger);
 app.use(cors());
 app.use(express.json());
 
@@ -23,7 +35,7 @@ const redisClient = createClient({
   password: process.env.REDIS_PASSWORD
 });
 
-redisClient.on('error', (err) => console.log('Redis Client Error', err));
+redisClient.on('error', (err) => logger.error({ err }, 'Redis client error'));
 
 // Initialize database table
 async function initDB() {
@@ -38,7 +50,7 @@ async function initDB() {
       )
     `);
   } catch (err) {
-    console.error('Error creating table:', err);
+    logger.error({ err }, 'Error creating table');
   } finally {
     client.release();
   }
@@ -48,11 +60,11 @@ async function initDB() {
 async function connect() {
   try {
     await redisClient.connect();
-    console.log('Connected to Redis');
+    logger.info('Connected to Redis');
     await initDB();
-    console.log('Database initialized');
+    logger.info('Database initialized');
   } catch (err) {
-    console.error('Connection error:', err);
+    logger.error({ err }, 'Connection error');
   }
 }
 
@@ -60,15 +72,20 @@ async function connect() {
 app.get('/api/todos', async (req, res) => {
   try {
     const cached = await redisClient.get('todos');
+    cacheRequests.add(1, { result: cached ? 'hit' : 'miss' });
+    req.log.debug({ cache: cached ? 'hit' : 'miss' }, 'Todo cache lookup');
     if (cached) {
+      todoOperations.add(1, { operation: 'list', status: 'success' });
       return res.json(JSON.parse(cached));
     }
 
     const result = await pool.query('SELECT * FROM todos ORDER BY id');
     await redisClient.set('todos', JSON.stringify(result.rows), { EX: 30 });
+    todoOperations.add(1, { operation: 'list', status: 'success' });
     res.json(result.rows);
   } catch (err) {
-    console.error('Error getting todos:', err);
+    req.log.error({ err }, 'Error getting todos');
+    todoOperations.add(1, { operation: 'list', status: 'error' });
     res.status(500).json({ error: 'Server error' });
   }
 });
@@ -77,6 +94,7 @@ app.get('/api/todos', async (req, res) => {
 app.post('/api/todos', async (req, res) => {
   const { title } = req.body;
   if (!title) {
+    req.log.warn('Create todo rejected: title is required');
     return res.status(400).json({ error: 'Title is required' });
   }
 
@@ -86,9 +104,12 @@ app.post('/api/todos', async (req, res) => {
       [title]
     );
     await redisClient.del('todos');
+    todoOperations.add(1, { operation: 'create', status: 'success' });
+    req.log.info({ todoId: result.rows[0].id }, 'Todo created');
     res.status(201).json(result.rows[0]);
   } catch (err) {
-    console.error('Error creating todo:', err);
+    req.log.error({ err }, 'Error creating todo');
+    todoOperations.add(1, { operation: 'create', status: 'error' });
     res.status(500).json({ error: 'Server error' });
   }
 });
@@ -104,12 +125,16 @@ app.put('/api/todos/:id', async (req, res) => {
       [title, completed, id]
     );
     if (result.rowCount === 0) {
+      req.log.warn({ todoId: id }, 'Update todo failed: not found');
       return res.status(404).json({ error: 'Todo not found' });
     }
     await redisClient.del('todos');
+    todoOperations.add(1, { operation: 'update', status: 'success' });
+    req.log.info({ todoId: id, completed: result.rows[0].completed }, 'Todo updated');
     res.json(result.rows[0]);
   } catch (err) {
-    console.error('Error updating todo:', err);
+    req.log.error({ err, todoId: id }, 'Error updating todo');
+    todoOperations.add(1, { operation: 'update', status: 'error' });
     res.status(500).json({ error: 'Server error' });
   }
 });
@@ -121,12 +146,16 @@ app.delete('/api/todos/:id', async (req, res) => {
   try {
     const result = await pool.query('DELETE FROM todos WHERE id = $1 RETURNING *', [id]);
     if (result.rowCount === 0) {
+      req.log.warn({ todoId: id }, 'Delete todo failed: not found');
       return res.status(404).json({ error: 'Todo not found' });
     }
     await redisClient.del('todos');
+    todoOperations.add(1, { operation: 'delete', status: 'success' });
+    req.log.info({ todoId: id }, 'Todo deleted');
     res.json({ message: 'Todo deleted' });
   } catch (err) {
-    console.error('Error deleting todo:', err);
+    req.log.error({ err, todoId: id }, 'Error deleting todo');
+    todoOperations.add(1, { operation: 'delete', status: 'error' });
     res.status(500).json({ error: 'Server error' });
   }
 });
@@ -134,6 +163,6 @@ app.delete('/api/todos/:id', async (req, res) => {
 const PORT = process.env.PORT || 3000;
 connect().then(() => {
   app.listen(PORT, () => {
-    console.log(`Server running on port ${PORT}`);
+    logger.info({ port: PORT }, `Server running on port ${PORT}`);
   });
 });

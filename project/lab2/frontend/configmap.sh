@@ -1,0 +1,1 @@
+kubectl create configmap frontend-html --from-file=./frontend/index.html -n default
