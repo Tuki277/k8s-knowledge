@@ -11,4 +11,4 @@ resources:
 # Jenkins tự sửa dòng newTag sau mỗi lần build (xem Jenkinsfile).
 images:
   - name: tuki277/lab-k8s-backend-nodejs
-    newTag: develop
+    newTag: 7-7cd3a69
