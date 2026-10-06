@@ -175,3 +175,18 @@ kubectl exec -it -n lab2 deployment/backend-deployment -- sh -c "nc -zv postgres
 
 # 4. Test kết nối Redis
 kubectl exec -it -n lab2 deployment/backend-deployment -- sh -c "nc -zv redis-master.redis.svc.cluster.local 6379"
+
+# chỉ giữ lại 3 deployment
+kubectl patch deployment backend-deployment -n lab2 -p '{"spec":{"revisionHistoryLimit":3}}'
+
+# jenkins add node
+# Xóa file cũ
+rm -f agent.jar
+
+# Tải lại file mới (thêm -L để theo dõi chuyển hướng)
+curl -L -u admin:admin123 -o agent.jar https://k8s-on-prem.squad-xteam.com/jenkins/jnlpJars/agent.jar
+
+# Kiểm tra lại kích thước và loại file
+ls -lh agent.jar
+file agent.jar
+

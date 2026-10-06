@@ -1,0 +1,14 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: lab2
+
+resources:
+  - deployment.yaml
+  - service.yaml
+  - ingress.yaml
+
+# Jenkins tự sửa dòng newTag sau mỗi lần build (xem Jenkinsfile).
+images:
+  - name: tuki277/lab-k8s-backend-nodejs
+    newTag: develop

@@ -30,3 +30,6 @@ kubectl get pods -l app=<ten-deployment> -n <namespace>
 
 # Cập nhật biến môi trường cho các container trong Deployment
 kubectl set env deployment/<ten-deployment> <key>=<value>
+
+# Redeploy
+kubectl rollout restart deployment <ten-deployment> -n <namespace>

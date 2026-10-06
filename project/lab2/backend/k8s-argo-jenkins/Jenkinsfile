@@ -1,0 +1,88 @@
+// Pipeline: build image -> push Docker Hub -> cập nhật tag trong manifests -> commit lên git.
+// Argo CD theo dõi git và tự deploy khi tag đổi.
+pipeline {
+  agent { label 'node-1' }
+
+  triggers {
+    githubPush()               // webhook từ GitHub
+  }
+
+  environment {
+    IMAGE          = 'tuki277/lab-k8s-backend-nodejs'
+    BACKEND_DIR    = 'project/lab2/backend'
+    MANIFEST_DIR   = 'project/lab2/backend/k8s-argo-jenkins/manifests'
+    GIT_REPO       = 'github.com/Tuki277/k8s-knowledge.git'
+    GIT_BRANCH     = 'master'
+  }
+
+  stages {
+    stage('Checkout') {
+      steps {
+        // Job kiểu "Pipeline script" không tự checkout nên phải clone tường minh.
+        git url: "https://${env.GIT_REPO}", branch: env.GIT_BRANCH, credentialsId: 'github-credentials'
+      }
+    }
+
+    stage('Skip commit của CI') {
+      steps {
+        script {
+          def msg = sh(returnStdout: true, script: 'git log -1 --pretty=%B').trim()
+          if (msg.contains('[skip ci]')) {
+            currentBuild.result = 'NOT_BUILT'
+            echo 'Commit do CI tạo ra, bỏ qua để tránh vòng lặp.'
+            env.SKIP_BUILD = 'true'
+          }
+        }
+      }
+    }
+
+    stage('Build image') {
+      when { expression { env.SKIP_BUILD != 'true' } }
+      steps {
+        script {
+          def sha = sh(returnStdout: true, script: 'git rev-parse --short HEAD').trim()
+          env.TAG = "${env.BUILD_NUMBER}-${sha}"
+        }
+        sh 'docker build -t $IMAGE:$TAG -t $IMAGE:latest $BACKEND_DIR'
+      }
+    }
+
+    stage('Push Docker Hub') {
+      when { expression { env.SKIP_BUILD != 'true' } }
+      steps {
+        withCredentials([usernamePassword(credentialsId: 'dockerhub-credentials',
+                                          usernameVariable: 'DH_USER', passwordVariable: 'DH_PASS')]) {
+          sh '''
+            echo "$DH_PASS" | docker login -u "$DH_USER" --password-stdin
+            docker push $IMAGE:$TAG
+            docker push $IMAGE:latest
+            docker logout
+          '''
+        }
+      }
+    }
+
+    stage('Cập nhật manifest (GitOps)') {
+      when { expression { env.SKIP_BUILD != 'true' } }
+      steps {
+        withCredentials([usernamePassword(credentialsId: 'github-credentials',
+                                          usernameVariable: 'GH_USER', passwordVariable: 'GH_TOKEN')]) {
+          sh '''
+            sed -i.bak "s|^\\(\\s*newTag:\\).*|\\1 $TAG|" $MANIFEST_DIR/kustomization.yaml
+            rm -f $MANIFEST_DIR/kustomization.yaml.bak
+            git config user.name  "jenkins"
+            git config user.email "jenkins@local"
+            git add $MANIFEST_DIR/kustomization.yaml
+            git commit -m "ci: backend image $TAG [skip ci]"
+            git pull --rebase https://$GH_USER:$GH_TOKEN@$GIT_REPO $GIT_BRANCH
+            git push https://$GH_USER:$GH_TOKEN@$GIT_REPO HEAD:$GIT_BRANCH
+          '''
+        }
+      }
+    }
+  }
+
+  post {
+    success { echo "Đã push $IMAGE:${env.TAG}. Argo CD sẽ tự deploy." }
+  }
+}

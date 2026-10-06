@@ -1,0 +1,63 @@
+LUỒNG
+  push code -> Jenkins build image -> push Docker Hub (tuki277/lab-k8s-backend-nodejs, tag = <build>-<sha>)
+            -> Jenkins sửa newTag trong manifests/kustomization.yaml, commit [skip ci]
+            -> Argo CD thấy git đổi -> deploy bản mới vào namespace lab2
+
+CÁC FILE
+  Jenkinsfile                   pipeline cho Jenkins
+  application.yaml              Application của Argo CD (apply 1 lần)
+  secret.example.yaml           mẫu backend-secret (apply tay, KHÔNG commit mật khẩu thật)
+  manifests/                    thư mục Argo sync (deployment, service, ingress, kustomization)
+
+CÁC BƯỚC BẠN PHẢI LÀM
+1. Docker Hub
+   - Repository tuki277/lab-k8s-backend-nodejs (public cho đơn giản).
+   - Account Settings > Security > New Access Token (quyền Read & Write), lưu lại token.
+
+2. Tên image đã điền sẵn: tuki277/lab-k8s-backend-nodejs (Jenkinsfile + manifests/kustomization.yaml).
+   Đổi tên thì sửa cả 2 file và image trong manifests/deployment.yaml.
+
+3. GitHub
+   - Tạo Personal Access Token (quyền repo / Contents: Read and write) để Jenkins push manifest.
+   - Branch master không được bật rule chặn push trực tiếp.
+   - Repo public thì Argo đọc được; repo private thì thêm credential repo trong Argo
+     (Settings > Repositories) và thêm imagePullSecret nếu repo Docker Hub private.
+
+4. Jenkins
+   - Cài plugin: Pipeline, Git, GitHub, Credentials Binding.
+   - Agent chạy build phải có docker (nếu Jenkins chạy trong container, mount /var/run/docker.sock
+     hoặc dùng agent riêng có Docker).
+   - Manage Jenkins > Credentials, tạo 2 credential kiểu "Username with password":
+       dockerhub-credentials = username Docker Hub + access token
+       github-credentials    = username GitHub + Personal Access Token
+   - New Item > Pipeline > Pipeline script from SCM > Git:
+       Repository URL: https://github.com/Tuki277/k8s-knowledge.git
+       Branch: */master
+       Script Path: project/lab2/backend/k8s-argo-jenkins/Jenkinsfile
+
+5. Trigger khi push
+   - Cách nhanh: để pollSCM (Jenkins tự kiểm tra git mỗi ~2 phút), không cần làm gì thêm.
+   - Cách tức thì: GitHub repo > Settings > Webhooks > http://<jenkins-public-url>/github-webhook/
+     (Jenkins chạy local cần public URL, ví dụ qua Cloudflare Tunnel/ngrok).
+
+6. Cluster (làm 1 lần)
+   - kubectl create namespace lab2                       (nếu chưa có)
+   - Sửa secret.example.yaml rồi: kubectl apply -f secret.example.yaml
+     (bỏ qua nếu backend-secret đã có trong lab2)
+   - Nếu đã apply k8s-argo/application.yaml: kubectl delete -f ../k8s-argo/application.yaml
+     (hai app cùng tên "backend", chỉ giữ một)
+   - Nếu còn service cũ "backend-service" thì xoá sau khi Argo tạo service "backend".
+
+7. Commit và push thư mục này lên master, rồi:
+   kubectl apply -f application.yaml
+
+8. Kiểm tra
+   - Push 1 thay đổi nhỏ trong backend/ -> Jenkins chạy -> Docker Hub có tag mới
+     -> git có commit "ci: backend image ... [skip ci]" -> Argo Synced, pod đổi image.
+   - kubectl -n lab2 get pods ; kubectl -n lab2 describe deploy backend-deployment | grep Image
+   - Argo mặc định poll git mỗi 3 phút; muốn nhanh hơn thì bấm Refresh trong UI hoặc cấu hình webhook Argo.
+
+LƯU Ý
+   - Vòng lặp: commit của Jenkins có "[skip ci]" nên pipeline tự bỏ qua; không bỏ chuỗi này.
+   - Mỗi lần Jenkins push tag, nhớ git pull trước khi bạn push tiếp để tránh conflict.
+   - Không commit mật khẩu thật vào secret.example.yaml.
