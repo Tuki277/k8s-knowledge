@@ -94,6 +94,31 @@ app.get('/api/health', async (req, res) => {
   });
 });
 
+app.get('/api/health-2', async (req, res) => {
+  const checks = { database: 'ok', redis: 'ok' };
+
+  try {
+    await pool.query('SELECT 1');
+  } catch (err) {
+    req.log.error({ err }, 'Health check: database down');
+    checks.database = 'error';
+  }
+
+  try {
+    await redisClient.ping();
+  } catch (err) {
+    req.log.error({ err }, 'Health check: redis down');
+    checks.redis = 'error';
+  }
+
+  const healthy = Object.values(checks).every((v) => v === 'ok');
+  res.status(healthy ? 200 : 503).json({
+    status: healthy ? 'ok' : 'error',
+    uptime: process.uptime(),
+    checks
+  });
+});
+
 // Get all todos
 app.get('/api/todos', async (req, res) => {
   try {
