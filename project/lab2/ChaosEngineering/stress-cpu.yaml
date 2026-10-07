@@ -1,0 +1,17 @@
+apiVersion: chaos-mesh.org/v1alpha1
+kind: StressChaos
+metadata:
+  name: backend-cpu-stress
+  namespace: chaos-mesh
+spec:
+  mode: all # Áp dụng cho tất cả các pod khớp selector
+  selector:
+    namespaces:
+      - lab2
+    labelSelectors:
+      app: backend
+  stressors:
+    cpu:
+      workers: 4 # Số luồng "đốt" CPU
+      load: 80   # Mục tiêu: làm CPU đạt 80% tải
+  duration: "5m" # Thí nghiệm kéo dài 5 phút

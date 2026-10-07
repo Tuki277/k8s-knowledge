@@ -190,3 +190,44 @@ curl -L -u admin:admin123 -o agent.jar https://k8s-on-prem.squad-xteam.com/jenki
 ls -lh agent.jar
 file agent.jar
 
+kubectl get pvc -n postgresql
+
+kubectl exec -it postgresql-0 -n postgresql -- df -h /bitnami/postgresql
+
+kubectl get storageclass
+
+kubectl get storageclass <tên-storage-class-của-bạn> -o jsonpath='{.allowVolumeExpansion}'
+
+# docker desktop
+kubectl patch storageclass hostpath -p '{"allowVolumeExpansion": true}'
+
+kubectl get storageclass hostpath -o jsonpath='{.allowVolumeExpansion}'
+
+kubectl patch pvc data-postgresql-0 -n postgresql -p '{"spec":{"resources":{"requests":{"storage":"10Gi"}}}}'
+
+kubectl apply -f https://github.com/kubernetes-sigs/metrics-server/releases/latest/download/components.yaml
+
+# cho docker desktop
+kubectl patch deployment metrics-server -n kube-system --type='json' -p='[{"op":"add","path":"/spec/template/spec/containers/0/args/-","value":"--kubelet-insecure-tls"}]'
+
+kubectl apply -f hpa.yaml
+
+helm repo add chaos-mesh https://charts.chaos-mesh.org
+helm repo update
+
+helm install chaos-mesh chaos-mesh/chaos-mesh \
+  --namespace chaos-mesh \
+  --create-namespace \
+  --set chaosDaemon.runtime=containerd \
+  --set chaosDaemon.socketPath=/run/containerd/containerd.sock
+
+# cho docker desktop
+helm install chaos-mesh chaos-mesh/chaos-mesh \
+  --namespace chaos-mesh \
+  --create-namespace \
+  --set chaosDaemon.runtime=docker \
+  --set chaosDaemon.socketPath=/var/run/docker.sock
+
+# vault
+helm repo add hashicorp https://helm.releases.hashicorp.com
+helm repo update

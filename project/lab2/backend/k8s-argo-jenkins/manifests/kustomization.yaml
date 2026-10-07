@@ -6,6 +6,7 @@ namespace: lab2
 resources:
   - deployment.yaml
   - service.yaml
+  - hpa.yaml
   - ingress.yaml
 
 # Jenkins tự sửa dòng newTag sau mỗi lần build (xem Jenkinsfile).
