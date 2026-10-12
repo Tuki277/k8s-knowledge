@@ -42,7 +42,7 @@ helm install jenkins jenkins/jenkins \
   --namespace jenkins \
   --create-namespace \
   --set controller.adminPassword='admin123' \
-  --set controller.serviceType=ClusterIP
+  --set controller.serviceType=ClusterIP 
 
 kubectl get secret --namespace jenkins jenkins -o jsonpath="{.data.jenkins-admin-password}" | base64 --decode; echo
 
