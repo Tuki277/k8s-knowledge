@@ -13,3 +13,5 @@ helm install jenkins jenkins/jenkins \
   --set agent.nodeSelector."role"=worker
 
 kubectl get secret --namespace jenkins jenkins -o jsonpath="{.data.jenkins-admin-password}" | base64 --decode; echo
+
+kubectl logs jenkins-0 -n jenkins -c init

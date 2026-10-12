@@ -1,0 +1,106 @@
+ISTIO + MICROSERVICES LAB - GHI CHU LUONG TRIEN KHAI
+=====================================================
+
+1. HIEN TAI (docker compose, chua co Istio)
+-------------------------------------------
+
+  Browser
+     |
+     v
+  frontend (nginx :3000)  -- html/css/js
+     |  fetch http://localhost:8080/api/...
+     v
+  gateway (nginx :8080)
+     |-- /api/users  --> user-service  (Express :3001) --> Postgres
+     '-- /api/visits --> visit-service (Flask   :3002) --> Redis
+
+
+2. DICH LAM LAB TREN K8S: ISTIO THAY THE NGINX GATEWAY (khuyen dung)
+--------------------------------------------------------------------
+
+  Client
+     |
+     v
+  Istio Ingress Gateway   (istio-system, Service LoadBalancer)
+     |   Gateway + VirtualService route theo path
+     |-- /api/users  --> user-service  [app + istio-proxy] --> Postgres
+     '-- /api/visits --> visit-service [app + istio-proxy] --> Redis
+
+  Frontend: serve rieng (hoac cung host, path "/") -> goi /api/* qua ingress gateway.
+  Bo pod nginx gateway (VirtualService da lam viec do).
+
+
+3. CAC BUOC TRIEN KHAI
+----------------------
+
+  B1. Cai control plane
+        istioctl install --set profile=demo   (hoac Helm: base + istiod + gateway)
+        -> namespace istio-system, pod istiod, istio-ingressgateway
+
+  B2. Bat sidecar injection cho namespace cua app
+        kubectl label ns <app-ns> istio-injection=enabled
+
+  B3. Deploy app (Deployment + Service cho frontend, user-service, visit-service)
+        - Ten port Service theo dang http-...  (vd: http-user)
+        - Restart pod de sidecar duoc inject (moi pod co 2 container)
+
+  B4. Khai bao routing
+        Gateway          : mo port 80/443 tren ingress gateway
+        VirtualService   : /api/users  -> user-service:3001
+                           /api/visits -> visit-service:3002
+                           /           -> frontend:80
+
+  B5. Bao mat noi bo
+        PeerAuthentication   : mTLS mode STRICT
+        AuthorizationPolicy  : chi cho phep service can thiet goi nhau
+
+  B6. (Tuy chon) Traffic management
+        DestinationRule : subset v1/v2, circuit breaker
+        VirtualService  : canary theo weight, retries, timeout
+
+  B7. Quan sat
+        Kiali / Prometheus / Jaeger, hoac day metrics + trace sang SigNoz
+        App can forward header trace (x-request-id, traceparent...)
+
+
+4. BA CACH DAT ISTIO SO VOI API GATEWAY
+---------------------------------------
+
+  (1) THAY THE  - lab / don gian
+      Client -> Istio Ingress GW -> services [sidecar]
+
+  (2) ISTIO DUNG TRUOC, NGINX GW DUNG SAU - khi gateway co logic rieng
+      Client -> Istio Ingress GW -> nginx gateway [sidecar] -> services [sidecar]
+
+  (3) INGRESS-NGINX DUNG TRUOC, ISTIO CHI TRONG MESH - it thay doi nhat
+      Client -> ingress-nginx -> nginx gateway [sidecar] -> services [sidecar]
+
+
+5. PRODUCTION THUC TE
+---------------------
+
+  Client
+    -> CDN / WAF                   (DDoS, cache, chan bot)
+    -> Cloud Load Balancer         (public IP, TLS termination)
+    -> API Gateway                 (Kong/Apigee/Envoy GW: auth, rate limit, API key, quota)
+    -> Istio Ingress Gateway       (dua traffic vao mesh)
+    -> Services [sidecar]  <== mTLS, retry, canary ==>  Services [sidecar]
+    -> DB (managed: RDS/ElastiCache) khai bao bang ServiceEntry
+
+  Phan vai:
+    API Gateway = north-south (ben ngoai): auth, rate limit, quota, version API
+    Istio       = east-west   (noi bo)   : mTLS, AuthZ theo service, retry, canary, metrics
+
+  Luu y:
+    - Team nho / it service: Ingress hoac Gateway API la du, khong can mesh.
+    - Can nhac Istio ambient mode (khong sidecar) neu bat dau moi.
+    - Uu tien Gateway API (Gateway/HTTPRoute) khi viet config moi.
+    - istiod chay nhieu replica; ingress gateway co HPA + PodDisruptionBudget, trai nhieu zone.
+
+
+6. CHON THEO QUY MO
+-------------------
+
+  Lab / startup nho   : Istio Gateway thay nginx gateway (hoac chi ingress-nginx)
+  Vua, nhieu team     : Ingress/Gateway API o cong vao + Istio (hoac ambient) cho mTLS, canary
+  Lon, co API cong khai: WAF -> API Gateway chuyen dung -> Istio mesh

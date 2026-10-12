@@ -1,0 +1,31 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: visit-service
+  namespace: micro-demo
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: visit-service }
+  template:
+    metadata:
+      labels: { app: visit-service, version: v1 }
+    spec:
+      containers:
+        - name: visit-service
+          image: ${REGISTRY}/lab3-visit-service:${TAG}
+          imagePullPolicy: Always
+          env:
+            - { name: REDIS_HOST, value: redis }
+          ports:
+            - containerPort: 3002
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: visit-service
+  namespace: micro-demo
+spec:
+  selector: { app: visit-service }
+  ports:
+    - { name: http-visit, port: 3002, targetPort: 3002 }

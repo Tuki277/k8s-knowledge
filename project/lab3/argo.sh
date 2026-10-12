@@ -10,4 +10,9 @@ helm install argocd argo/argo-cd \
 
 kubectl -n argocd get secret argocd-initial-admin-secret -o jsonpath="{.data.password}" | base64 -d
 
+kubectl get configmap argocd-cmd-params-cm -n argocd -o yaml
+
 kubectl patch configmap argocd-cmd-params-cm -n argocd --type=merge -p '{"data":{"server.insecure":"true"}}'kubectl rollout restart deployment argocd-server -n argocd
+
+# kubectl rollout restart deployment argocd-server -n argocd
+# kubectl rollout status deployment argocd-server -n argocd

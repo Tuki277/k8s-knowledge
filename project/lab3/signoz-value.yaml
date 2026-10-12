@@ -1,0 +1,43 @@
+global:
+  storageClass: local-path
+
+clickhouse:
+  installCustomStorageClass: false
+  persistence:
+    size: 20Gi
+  nodeSelector:
+    role: worker
+
+zookeeper:
+  persistence:
+    size: 10Gi
+  nodeSelector:
+    role: worker
+
+frontend:
+  nodeSelector:
+    role: worker
+
+queryService:
+  nodeSelector:
+    role: worker
+
+otelCollector:
+  nodeSelector:
+    role: worker
+
+otelCollectorMetrics:
+  nodeSelector:
+    role: worker
+
+alertmanager:
+  nodeSelector:
+    role: worker
+
+schemaMigrator:
+  nodeSelector:
+    role: worker
+
+userPermissions:
+  nodeSelector:
+    role: worker

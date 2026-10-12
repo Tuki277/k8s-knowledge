@@ -1,0 +1,58 @@
+<!doctype html>
+<html lang="vi">
+<head>
+  <meta charset="utf-8">
+  <title>Microservices Lab</title>
+  <style>
+    body { font-family: sans-serif; max-width: 480px; margin: 40px auto; }
+    section { border: 1px solid #ccc; border-radius: 8px; padding: 16px; margin-bottom: 16px; }
+    button { cursor: pointer; }
+  </style>
+</head>
+<body>
+  <h1>Microservices Lab</h1>
+
+  <section>
+    <h3>Users (Express + Postgres)</h3>
+    <input id="name" placeholder="name">
+    <button onclick="addUser()">Add</button>
+    <ul id="users"></ul>
+  </section>
+
+  <section>
+    <h3>Visits (Python + Redis)</h3>
+    <p>Count: <b id="count">0</b></p>
+    <button onclick="addVisit()">+1</button>
+  </section>
+
+  <script>
+    // docker compose: gateway ở :8080 | k8s: Istio ingress route /api cùng host
+    const API = location.port === '3000' ? 'http://localhost:8080/api' : '/api';
+
+    async function loadUsers() {
+      const users = await (await fetch(`${API}/users`)).json();
+      document.getElementById('users').innerHTML = users.map(u => `<li>${u.name}</li>`).join('');
+    }
+    async function addUser() {
+      const name = document.getElementById('name').value;
+      if (!name) return;
+      await fetch(`${API}/users`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name }),
+      });
+      document.getElementById('name').value = '';
+      loadUsers();
+    }
+    async function loadVisits() {
+      const d = await (await fetch(`${API}/visits`)).json();
+      document.getElementById('count').textContent = d.count;
+    }
+    async function addVisit() {
+      const d = await (await fetch(`${API}/visits`, { method: 'POST' })).json();
+      document.getElementById('count').textContent = d.count;
+    }
+    loadUsers(); loadVisits();
+  </script>
+</body>
+</html>

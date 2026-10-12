@@ -8,8 +8,8 @@ mkdir -p $HOME/.kube
 sudo cp -i /etc/kubernetes/admin.conf $HOME/.kube/config
 sudo chown $(id -u):$(id -g) $HOME/.kube/config
 
-kubeadm join 10.10.1.90:6443 --token 58pz8s.yiafbxpxqgrdut3o \
-        --discovery-token-ca-cert-hash sha256:da1e3bc8d1920c48d4f76fb9ccbc7e5d57a46b968f17a27795f1012adeaacf81
+kubeadm join 10.10.11.29:6443 --token wrfl3c.m6dkiwa1gdfjndah \
+        --discovery-token-ca-cert-hash sha256:b2c34b23b1158106e73187bbc9851194472215c214e844a54f5c30c4ce1c5e3d
 
 kubectl create -f https://raw.githubusercontent.com/projectcalico/calico/v3.31.3/manifests/operator-crds.yaml
 
