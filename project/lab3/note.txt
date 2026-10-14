@@ -1,0 +1,20 @@
+- cụm k8s
+- 1 master, 3 nodes
+
+- rancher quản lý cụm
+- jenkins
+- argocd
+- postgresql
+- redis
+
+- micro services app
+    - một project gitlab
+    - một project github
+- istio
+- nginx ingress
+- vault
+
+- signoz
+- hpa
+
+- chaos mesh
